@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manager"
+  short_description: "Delegate, supervise, and verify local coding tasks"
+  default_prompt: "Use $manager to plan, delegate, supervise, and independently verify this repository task."

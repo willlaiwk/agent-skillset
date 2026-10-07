@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+"""Local manager runtime. Python 3.9+, POSIX, Git, tmux; no service required."""
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import tempfile
+import uuid
+
+sys.dont_write_bytecode = True
+from lib import adapter
+
+HERE = Path(__file__).resolve()
+SKILL = HERE.parent.parent
+STATES = {"queued", "working", "needs_manager", "needs_user", "verification",
+          "done", "failed", "cancelled"}
+WORKER_STATES = STATES - {"queued", "needs_user"}
+DEFAULTS = {
+    "manager": {"max_workers": 4, "stale_seconds": 900, "max_retries": 2},
+    "agents": {"default": "auto"},
+    "git": {"isolation": "worktree", "auto_commit": True,
+            "auto_merge": False, "auto_push": False},
+    "verification": {},
+    "escalation": {"product_decisions": "ask", "architecture": "recommend_then_ask",
+                   "destructive_actions": "always_ask"},
+}
+
+
+class Error(Exception):
+    pass
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def emit(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def run(argv, cwd=None, check=True, data=None):
+    try:
+        result = subprocess.run([str(x) for x in argv], cwd=cwd, input=data,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise Error(str(exc)) from exc
+    if check and result.returncode:
+        raise Error(result.stderr.decode(errors="replace").strip() or
+                    "Command failed: " + shlex.join([str(x) for x in argv]))
+    return result
+
+
+def git(root, *args):
+    return run(["git", "-C", root, *args]).stdout.decode(errors="surrogateescape").strip()
+
+
+def read_json(path):
+    try:
+        with path.open() as stream:
+            value = json.load(stream)
+        if not isinstance(value, dict):
+            raise ValueError("expected an object")
+        return value
+    except (OSError, ValueError) as exc:
+        raise Error("Cannot read " + str(path) + ": " + str(exc)) from exc
+
+
+def atomic_text(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise Error("Refusing symlink: " + str(path))
+    fd, temporary = tempfile.mkstemp(prefix=".write-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_json(path, value):
+    atomic_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+@contextlib.contextmanager
+def lock(path):
+    if path.is_symlink():
+        raise Error("Refusing symlink lock: " + str(path))
+    with path.open("a") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def task_id(value):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value):
+        raise argparse.ArgumentTypeError("Task IDs use 1–64 letters, digits, '_' or '-'")
+    return value
+
+
+def config(root):
+    result = json.loads(json.dumps(DEFAULTS))
+    path = root / ".manager.yml"
+    if path.exists():
+        raw = path.read_text()
+        try:
+            supplied = json.loads(raw)
+        except ValueError:
+            try:
+                import yaml
+            except ImportError as exc:
+                raise Error("YAML configuration requires PyYAML in this Python environment; "
+                            "install it explicitly or use JSON syntax in .manager.yml") from exc
+            try:
+                supplied = yaml.safe_load(raw)
+            except yaml.YAMLError as exc:
+                raise Error("Invalid .manager.yml: " + str(exc)) from exc
+        if not isinstance(supplied, dict):
+            raise Error(".manager.yml must be a mapping")
+        for section, values in supplied.items():
+            if section not in result or not isinstance(values, dict):
+                raise Error("Unsupported configuration section: " + str(section))
+            allowed = set(DEFAULTS[section])
+            if section == "agents":
+                allowed |= {"research", "implementation", "review", "verification"}
+            if section == "verification":
+                allowed = {"test", "typecheck", "lint", "build"}
+            if set(values) - allowed:
+                raise Error("Unsupported keys in " + section)
+            result[section].update(values)
+    for key in ("max_workers", "stale_seconds", "max_retries"):
+        value = result["manager"][key]
+        if type(value) is not int or value < (0 if key == "max_retries" else 1):
+            raise Error("manager." + key + " has an invalid integer value")
+    for value in result["agents"].values():
+        if value not in ("auto", "codex", "claude"):
+            raise Error("agents values must be auto, codex, or claude")
+    if result["git"]["isolation"] != "worktree":
+        raise Error("MVP supports only git.isolation: worktree")
+    for key in ("auto_commit", "auto_merge", "auto_push"):
+        if type(result["git"][key]) is not bool:
+            raise Error("git." + key + " must be boolean")
+    if result["git"]["auto_merge"] or result["git"]["auto_push"]:
+        raise Error("MVP does not automatically merge or push")
+    if any(not isinstance(v, str) or not v.strip() for v in result["verification"].values()):
+        raise Error("verification commands must be nonempty strings")
+    for key, value in result["escalation"].items():
+        if value != DEFAULTS["escalation"][key]:
+            raise Error("MVP supports the documented escalation defaults only")
+    return result
+
+
+class Runtime:
+    def __init__(self, root):
+        self.root = Path(git(Path(root).resolve(), "rev-parse", "--show-toplevel")).resolve()
+        self.home = self.root / ".manager"
+        self.state_path = self.home / "state.json"
+        self.key = hashlib.sha256(str(self.root).encode()).hexdigest()[:12]
+        self.session = "manager-" + self.key
+        if self.home.is_symlink():
+            raise Error(".manager must not be a symlink")
+        self.state = None
+
+    def load(self):
+        self.state = read_json(self.state_path)
+        if self.state.get("version") != 1 or self.state.get("root") != str(self.root):
+            raise Error("Unsupported state version or moved project; preserve and repair state")
+        if not isinstance(self.state.get("tasks"), dict):
+            raise Error("Invalid task registry")
+        for identity, item in self.state["tasks"].items():
+            try:
+                task_id(identity)
+            except argparse.ArgumentTypeError as exc:
+                raise Error("Invalid persisted task ID") from exc
+            if not isinstance(item, dict) or not isinstance(item.get("state"), str) or item["state"] not in STATES:
+                raise Error("Invalid task record: " + identity)
+            required = {"task_id", "title", "kind", "agent", "dependencies", "base",
+                        "branch", "worktree", "window", "attempt", "state", "summary"}
+            if (not required.issubset(item) or item["task_id"] != identity or
+                    type(item["attempt"]) is not int or item["attempt"] < 0 or
+                    not isinstance(item["dependencies"], list) or
+                    any(not isinstance(d, str) or d == identity or d not in self.state["tasks"]
+                        for d in item["dependencies"]) or
+                    item["branch"] != "manager/" + self.key + "/" + identity or
+                    item["window"] != "mgr-" + identity):
+                raise Error("Invalid persisted task metadata: " + identity)
+            if item.get("worktree") != str(self.home / "worktrees" / identity):
+                raise Error("Invalid worktree path: " + identity)
+
+    def save(self):
+        self.state["updated_at"] = now()
+        atomic_json(self.state_path, self.state)
+
+    def directory(self, identity):
+        path = self.home / "tasks" / identity
+        if path.is_symlink():
+            raise Error("Task directory is a symlink")
+        return path
+
+    def task(self, identity):
+        if identity not in self.state["tasks"]:
+            raise Error("Unknown task: " + identity)
+        return self.state["tasks"][identity]
+
+    def event(self, identity, kind, **details):
+        path = self.home / "events" / (identity or "manager")
+        atomic_json(path / (uuid.uuid4().hex + ".json"),
+                    {"type": kind, "task_id": identity, "at": now(), **details})
+
+    def init(self):
+        config(self.root)  # Reject unsupported config before writing project state.
+        if self.state_path.exists():
+            self.load()
+            return {"initialized": False, "root": str(self.root)}
+        artifacts = [p for p in self.home.iterdir() if p.name != ".lock"]
+        if artifacts:
+            raise Error("State missing but runtime artifacts exist; preserve and repair them")
+        git(self.root, "rev-parse", "--verify", "HEAD")
+        ignore = self.root / ".gitignore"
+        if ignore.is_symlink():
+            raise Error("Refusing symlink .gitignore")
+        text = ignore.read_text() if ignore.exists() else ""
+        if not run(["git", "-C", self.root, "check-ignore", "--no-index", "--quiet",
+                    ".manager/state.json"], check=False).returncode == 0:
+            with ignore.open("a") as stream:
+                stream.write(("\n" if text and not text.endswith("\n") else "") +
+                             "\n# Local manager runtime\n/.manager/\n")
+        for name in ("events", "inbox", "tasks", "worktrees"):
+            (self.home / name).mkdir()
+        self.state = {"version": 1, "root": str(self.root), "session": self.session,
+                      "created_at": now(), "tasks": {}}
+        self.save()
+        self.event(None, "manager.initialized")
+        return {"initialized": True, "root": str(self.root), "state": str(self.state_path)}
+
+    def register(self, args):
+        if args.id in self.state["tasks"]:
+            raise Error("Task already exists; spawn it by ID or retry it")
+        if not args.title or not args.brief:
+            raise Error("New tasks require --title and --brief")
+        brief = Path(args.brief).resolve().read_text()
+        if not brief.strip():
+            raise Error("Task brief must not be empty")
+        dependencies = args.depends_on or []
+        if len(set(dependencies)) != len(dependencies):
+            raise Error("Duplicate dependencies")
+        for identity in dependencies:
+            self.task(identity)
+        base = git(self.root, "rev-parse", "--verify", "--end-of-options", args.base + "^{commit}")
+        item = {"task_id": args.id, "title": args.title, "kind": args.kind,
+                "agent": args.agent, "dependencies": dependencies, "base": base,
+                "branch": "manager/" + self.key + "/" + args.id,
+                "worktree": str(self.home / "worktrees" / args.id),
+                "window": "mgr-" + args.id, "pane": None, "attempt": 0,
+                "state": "queued", "summary": "Queued", "created_at": now(),
+                "verification": None, "accepted": None, "report_error": None}
+        directory = self.directory(args.id)
+        if directory.exists():
+            raise Error("Unregistered task artifacts exist; preserve and inspect them")
+        directory.mkdir()
+        (self.home / "inbox" / args.id).mkdir()
+        (self.home / "events" / args.id).mkdir()
+        atomic_text(directory / "brief.md", brief)
+        atomic_json(directory / "status.json", self.initial_report(item, "queued"))
+        self.state["tasks"][args.id] = item
+        self.save()
+        self.event(args.id, "task.queued")
+        return item
+
+    def initial_report(self, item, state):
+        return {"task_id": item["task_id"], "attempt": item["attempt"], "state": state,
+                "summary": item["summary"], "question": None, "updated_at": now(), "acks": []}
+
+    def panes(self):
+        result = run(["tmux", "list-panes", "-s", "-t", self.session,
+                      "-F", "#{window_name}\t#{pane_id}\t#{pane_dead}"], check=False)
+        if result.returncode:
+            # No server/session is normal. Other tmux failures must not erase live state.
+            error = result.stderr.decode(errors="replace")
+            if any(x in error for x in ("no server running", "no sessions", "can't find",
+                                         "No such file or directory")):
+                return {}
+            raise Error("tmux inventory failed: " + error.strip())
+        inventory = {}
+        for line in result.stdout.decode().splitlines():
+            window, pane, dead = line.split("\t")
+            if window in inventory:
+                raise Error("Ambiguous worker window: " + window)
+            inventory[window] = {"id": pane, "dead": dead == "1"}
+        return inventory
+
+    def worktrees(self):
+        result = run(["git", "-C", self.root, "worktree", "list", "--porcelain", "-z"])
+        records, current = {}, None
+        for field in result.stdout.decode(errors="surrogateescape").split("\0"):
+            if field.startswith("worktree "):
+                current = str(Path(field[9:]).resolve())
+                records[current] = {}
+            elif current and field.startswith("branch "):
+                records[current]["branch"] = field[7:]
+        return records
+
+    def reconcile(self):
+        settings = config(self.root)
+        inventory, worktrees = self.panes(), self.worktrees()
+        notices = []
+        for identity, item in self.state["tasks"].items():
+            previous = (item["state"], item["summary"], item.get("report_error"))
+            report = None
+            try:
+                report = read_json(self.directory(identity) / "status.json")
+                if (report.get("task_id") != identity or type(report.get("attempt")) is not int
+                        or report.get("attempt") != item["attempt"]
+                        or report.get("state") not in WORKER_STATES | {"queued"} or
+                        not isinstance(report.get("summary"), str)):
+                    raise Error("Invalid report identity, attempt, state, or summary")
+                if report["state"] == "done":
+                    result_path = self.directory(identity) / "result.md"
+                    if not result_path.is_file() or not result_path.read_text().strip():
+                        raise Error("Worker completion has no nonempty result.md")
+                if report["state"] == "needs_manager" and (
+                        not isinstance(report.get("question"), dict) or
+                        not isinstance(report["question"].get("text"), str) or
+                        not report["question"]["text"].strip()):
+                    raise Error("Worker question is missing or invalid")
+                stamp = dt.datetime.fromisoformat(report["updated_at"])
+                age = (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
+                item["report_error"] = None
+                item["worker_state"] = report["state"]
+                item["question"] = report.get("question")
+                item["stale"] = age > settings["manager"]["stale_seconds"]
+            except (Error, OSError, KeyError, TypeError, ValueError) as exc:
+                item["report_error"] = str(exc)
+                item["verification"] = None
+                if item["state"] not in ("done", "cancelled"):
+                    item["state"] = "failed"
+                    item["summary"] = "Invalid worker report; inspect preserved artifacts"
+            pane = inventory.get(item["window"])
+            item["pane"] = pane["id"] if pane else None
+            item["alive"] = bool(pane and not pane["dead"])
+            record = worktrees.get(item["worktree"])
+            item["worktree_valid"] = bool(record and record.get("branch") ==
+                                           "refs/heads/" + item["branch"] and
+                                           Path(item["worktree"]).is_dir())
+            terminal = item["state"] in ("done", "cancelled", "failed")
+            if not terminal and not item["report_error"] and item["state"] != "queued":
+                if not item["worktree_valid"]:
+                    item["state"], item["summary"] = "failed", "Worktree missing or branch changed"
+                    item["verification"] = None
+                elif report["state"] == "done":
+                    item["state"], item["summary"] = "verification", report["summary"]
+                elif not item["alive"]:
+                    item["state"], item["summary"] = "failed", "Worker missing or exited before completion"
+                    item["verification"] = None
+                elif item["state"] != "needs_user":
+                    item["state"], item["summary"] = report["state"], report["summary"]
+            if item.get("stale") and item["state"] not in ("done", "cancelled", "queued"):
+                notices.append({"task_id": identity, "issue": "stale_report"})
+            if previous != (item["state"], item["summary"], item.get("report_error")):
+                self.event(identity, "task.reconciled", state=item["state"], summary=item["summary"])
+        known = {x["window"] for x in self.state["tasks"].values()}
+        orphans = {name: pane for name, pane in inventory.items()
+                   if name.startswith("mgr-") and name not in known}
+        known_trees = {x["worktree"] for x in self.state["tasks"].values()}
+        orphan_trees = [str(p) for p in (self.home / "worktrees").iterdir()
+                        if str(p) not in known_trees]
+        orphan_tasks = [str(p) for p in (self.home / "tasks").iterdir()
+                        if p.is_dir() and p.name not in self.state["tasks"]]
+        self.save()
+        return {"tasks": list(self.state["tasks"].values()), "notices": notices,
+                "orphan_panes": orphans, "orphan_worktrees": orphan_trees,
+                "orphan_tasks": orphan_tasks}
+
+    def launch(self, item, agent_override=None):
+        self.reconcile()
+        if item["state"] != "queued":
+            raise Error("spawn requires a queued task; use retry for failed work")
+        for identity in item["dependencies"]:
+            if self.task(identity)["state"] != "done":
+                raise Error("Dependency is not manager-accepted: " + identity)
+        settings = config(self.root)
+        active = sum(not p["dead"] for name, p in self.panes().items() if name.startswith("mgr-"))
+        if active >= settings["manager"]["max_workers"]:
+            raise Error("max_workers reached; stop an idle worker first")
+        preference = agent_override or item["agent"]
+        if preference == "auto":
+            preference = settings["agents"].get(item["kind"], settings["agents"]["default"])
+        try:
+            name, executable = adapter.resolve(preference)
+        except ValueError as exc:
+            raise Error(str(exc)) from exc
+        # Check tmux before creating branches/worktrees.
+        run(["tmux", "-V"])
+        tree = Path(item["worktree"])
+        if not tree.exists():
+            exists = run(["git", "-C", self.root, "show-ref", "--verify", "--quiet",
+                          "refs/heads/" + item["branch"]], check=False).returncode == 0
+            if exists:
+                raise Error("Task branch already exists without its worktree; inspect before recovery")
+            git(self.root, "worktree", "add", "-b", item["branch"], str(tree), item["base"])
+            # Uncommitted .gitignore changes in the source tree do not enter a worktree.
+            common = Path(git(self.root, "rev-parse", "--git-common-dir"))
+            if not common.is_absolute():
+                common = self.root / common
+            exclude = common / "info" / "exclude"
+            exclude.parent.mkdir(exist_ok=True)
+            old = exclude.read_text() if exclude.exists() else ""
+            if "/.manager/" not in old.splitlines():
+                with exclude.open("a") as stream:
+                    stream.write(("\n" if old and not old.endswith("\n") else "") + "/.manager/\n")
+        elif not item.get("worktree_valid"):
+            raise Error("Worktree registration or branch does not match the task")
+        directory = self.directory(item["task_id"])
+        item["attempt"] += 1
+        item.update(state="working", summary="Worker starting", agent=name,
+                    verification=None, accepted=None, report_error=None)
+        assignment = {"task_id": item["task_id"], "attempt": item["attempt"],
+                      "root": str(self.root), "worktree": str(tree), "runtime": str(HERE),
+                      "auto_commit": settings["git"]["auto_commit"]}
+        with lock(directory / ".report.lock"):
+            atomic_json(directory / "assignment.json", assignment)
+            atomic_json(directory / "status.json", self.initial_report(item, "working"))
+        prompt = ("You are a worker managed by a primary agent, not a manager. Do not launch subagents. "
+                  "Read repository instructions and these files before working: " + str(directory / "brief.md") +
+                  "; " + str(directory / "assignment.json") + "; " + str(SKILL / "references/worker-protocol.md") +
+                  ". Work only in " + str(tree) + ". Use the absolute runtime " + str(HERE) +
+                  " with --root " + shlex.quote(str(self.root)) + " report " + item["task_id"] +
+                  " --attempt " + str(item["attempt"]) + " to report status. Read your inbox and prior result "
+                  "if present. Ask the manager through needs_manager; never bypass native permissions. "
+                  "Write result.md before reporting done; manager acceptance is independent. " +
+                  ("Commit only task-owned changes if repository/user policy permits."
+                   if settings["git"]["auto_commit"] else "Do not commit unless the manager instructs you."))
+        writable = [directory, self.home / "events" / item["task_id"],
+                    self.home / "inbox" / item["task_id"]]
+        argv = adapter.command(name, executable, tree, writable, prompt)
+        env = ["env", "MANAGER_WORKER_TASK=" + item["task_id"],
+               "MANAGER_WORKER_ATTEMPT=" + str(item["attempt"])]
+        self.save()  # Persist intent before starting a process.
+        self.event(item["task_id"], "worker.starting", attempt=item["attempt"], agent=name)
+        try:
+            if run(["tmux", "has-session", "-t", self.session], check=False).returncode:
+                run(["tmux", "new-session", "-d", "-s", self.session, "-n", "control", "-c", self.root])
+            # Set remain-on-exit before launch so immediate CLI errors remain inspectable.
+            run(["tmux", "set-option", "-t", self.session, "remain-on-exit", "on"])
+            pane = run(["tmux", "new-window", "-d", "-t", self.session + ":", "-n", item["window"],
+                        "-c", tree, "-P", "-F", "#{pane_id}", "exec " + shlex.join(env + argv)]).stdout.decode().strip()
+            item["pane"] = pane
+            self.save()
+            run(["tmux", "pipe-pane", "-o", "-t", pane,
+                 "cat >> " + shlex.quote(str(directory / "log.txt"))])
+        except Error as exc:
+            item.update(state="failed", summary="Launch failed: " + str(exc))
+            self.save()
+            self.event(item["task_id"], "worker.launch_failed", error=str(exc))
+            raise
+        self.event(item["task_id"], "worker.spawned", attempt=item["attempt"], pane=pane)
+        return item
+
+    def report(self, args):
+        directory = self.directory(args.id)
+        with lock(directory / ".report.lock"):
+            assignment = read_json(directory / "assignment.json")
+            if assignment.get("task_id") != args.id or assignment.get("attempt") != args.attempt:
+                raise Error("Stale or invalid attempt; read assignment.json")
+            if (directory / "accepted.json").exists() or (directory / "stopped.json").exists():
+                raise Error("Task is accepted or stopped; no more worker reports allowed")
+            old = read_json(directory / "status.json")
+            if args.state == "needs_manager" and not args.question:
+                raise Error("needs_manager requires --question")
+            if args.state == "done":
+                path = directory / "result.md"
+                if not path.is_file() or not path.read_text().strip():
+                    raise Error("done requires nonempty result.md")
+            acks = set(old.get("acks", []))
+            for message in args.ack:
+                if not re.fullmatch(r"[a-f0-9]{32}", message) or not (self.home / "inbox" / args.id / (message + ".json")).is_file():
+                    raise Error("Unknown inbox message: " + message)
+                acks.add(message)
+            value = {"task_id": args.id, "attempt": args.attempt, "state": args.state,
+                     "summary": args.summary, "question": None, "updated_at": now(), "acks": sorted(acks)}
+            if args.question:
+                value["question"] = {"type": args.question_type, "text": args.question, "options": args.option}
+            if args.file:
+                value["files_changed"] = args.file
+            if bool(args.test_command) != bool(args.test_result):
+                raise Error("--test-command and --test-result must be supplied together")
+            if args.test_command:
+                value["tests"] = {"command": args.test_command, "result": args.test_result}
+            atomic_json(directory / "status.json", value)
+            self.event(args.id, "worker." + args.state, attempt=args.attempt)
+            return value
+
+    def inbox(self, identity):
+        directory = self.directory(identity)
+        report = read_json(directory / "status.json")
+        acks = set(report.get("acks", []))
+        messages = [read_json(p) for p in sorted((self.home / "inbox" / identity).glob("*.json"))]
+        return [{**m, "acknowledged": m["message_id"] in acks} for m in messages]
+
+    def send(self, args):
+        self.reconcile()
+        item = self.task(args.id)
+        if item["state"] in ("done", "cancelled", "queued"):
+            raise Error("Cannot send to an accepted, cancelled, or unstarted task")
+        message = args.message if args.message is not None else Path(args.message_file).read_text()
+        if not message.strip():
+            raise Error("Message must not be empty")
+        identity = uuid.uuid4().hex
+        path = self.home / "inbox" / args.id / (identity + ".json")
+        value = {"message_id": identity, "task_id": args.id, "at": now(),
+                 "text": message, "delivery": "inbox"}
+        atomic_json(path, value)  # Always save before attempting terminal delivery.
+        item["verification"] = None
+        if item["state"] != "failed" or (item.get("alive") and item.get("worktree_valid")
+                                          and not item.get("report_error")):
+            item.update(state="working", summary="Manager sent a message; awaiting worker acknowledgment")
+        # Reset a completed/blocked report so stale completion cannot immediately reappear.
+        directory = self.directory(args.id)
+        with lock(directory / ".report.lock"):
+            report = read_json(directory / "status.json")
+            report.update(state="working", summary=item["summary"], question=None, updated_at=now())
+            atomic_json(directory / "status.json", report)
+        self.save()
+        delivery_error = None
+        if not args.inbox_only and item.get("alive"):
+            buffer = "manager-" + identity
+            try:
+                text = "Manager message " + identity + ": " + message + "\nRead and acknowledge this inbox message."
+                run(["tmux", "load-buffer", "-b", buffer, "-"], data=text.encode())
+                run(["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", item["pane"]])
+                run(["tmux", "send-keys", "-t", item["pane"], "Enter"])
+                value["delivery"] = "pasted_unacknowledged"
+            except Error as exc:
+                delivery_error = str(exc)
+                run(["tmux", "delete-buffer", "-b", buffer], check=False)
+        elif not args.inbox_only:
+            delivery_error = "Worker is not live; message retained in inbox for retry"
+        atomic_json(path, value)
+        self.event(args.id, "manager.message", message_id=identity, delivery=value["delivery"])
+        return {**value, "delivery_error": delivery_error}
+
+    def kill(self, item):
+        pane = self.panes().get(item["window"])
+        if pane:
+            if item.get("pane") and item["pane"] != pane["id"]:
+                raise Error("Pane identity changed; inspect before stopping")
+            run(["tmux", "kill-pane", "-t", pane["id"]])
+        item["pane"], item["alive"] = None, False
+
+    def stop(self, args):
+        item = self.task(args.id)
+        directory = self.directory(args.id)
+        with lock(directory / ".report.lock"):
+            atomic_json(directory / "stopped.json", {"at": now(), "attempt": item["attempt"]})
+            self.kill(item)
+            if item["state"] != "done":
+                item.update(state="cancelled", summary="Stopped by manager", verification=None)
+                atomic_json(directory / "status.json", self.initial_report(item, "cancelled"))
+        self.save()
+        self.event(args.id, "worker.stopped")
+        return item
+
+    def retry(self, args):
+        self.reconcile()
+        item = self.task(args.id)
+        if item["state"] not in ("failed", "cancelled"):
+            raise Error("retry requires failed or cancelled state; send corrections to a live worker")
+        if item["attempt"] >= 1 + config(self.root)["manager"]["max_retries"]:
+            raise Error("Retry limit reached; diagnose and report the remaining blocker")
+        if not item.get("worktree_valid"):
+            raise Error("Cannot retry missing or mismatched worktree; preserve and repair first")
+        self.kill(item)
+        directory = self.directory(args.id)
+        with lock(directory / ".report.lock"):
+            for filename in ("stopped.json", "accepted.json"):
+                marker = directory / filename
+                if marker.exists():
+                    marker.unlink()
+            item.update(state="queued", summary="Retry queued", verification=None)
+            atomic_json(directory / "status.json", self.initial_report(item, "queued"))
+        self.save()
+        return self.launch(item, args.agent)
+
+    def fingerprint(self, item):
+        tree = Path(item["worktree"])
+        if not item.get("worktree_valid"):
+            raise Error("Cannot verify missing or mismatched worktree")
+        digest = hashlib.sha256()
+        for argv in (["rev-parse", "HEAD"], ["diff", "--binary", "HEAD", "--"],
+                     ["diff", "--binary", "--cached", "HEAD", "--"],
+                     ["status", "--porcelain=v1", "-z"]):
+            digest.update(run(["git", "-C", tree, *argv]).stdout)
+        files = run(["git", "-C", tree, "ls-files", "--others", "--exclude-standard", "-z"]).stdout
+        for filename in sorted(x for x in files.split(b"\0") if x):
+            path = tree / os.fsdecode(filename)
+            digest.update(filename + b"\0")
+            if path.is_symlink():
+                digest.update(os.fsencode(os.readlink(path)))
+            else:
+                digest.update(str(path.stat().st_mode).encode())
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+        for filename in ("status.json", "result.md"):
+            path = self.directory(item["task_id"]) / filename
+            digest.update(path.read_bytes() if path.exists() else b"missing")
+        return digest.hexdigest()
+
+    def verify(self, args):
+        self.reconcile()
+        item = self.task(args.id)
+        if (item["state"] != "verification" or item.get("worker_state") != "done"
+                or item.get("report_error")):
+            raise Error("verify requires a valid worker completion report")
+        review = Path(args.review).read_text()
+        if not review.strip():
+            raise Error("Independent manager review must not be empty")
+        commands = args.command or list(config(self.root)["verification"].values())
+        if not commands or any(not c.strip() for c in commands):
+            raise Error("Specify independent verification commands or review .manager.yml verification settings")
+        directory = self.directory(args.id)
+        identity = uuid.uuid4().hex
+        evidence = directory / "verification" / identity
+        evidence.mkdir(parents=True)
+        atomic_text(evidence / "review.md", review)
+        item["verification"] = None
+        self.save()
+        before = self.fingerprint(item)
+        checks = []
+        for index, command in enumerate(commands):
+            output = evidence / (str(index + 1) + ".log")
+            timed_out = False
+            with output.open("wb") as stream:
+                process = subprocess.Popen(command, shell=True, executable="/bin/sh",
+                                           cwd=item["worktree"], stdout=stream,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+                try:
+                    code = process.wait(timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    code = 124
+                except BaseException:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    raise
+            checks.append({"command": command, "exit_code": code, "timed_out": timed_out,
+                           "log": str(output.relative_to(self.home))})
+        after = self.fingerprint(item)
+        passed = before == after and all(c["exit_code"] == 0 for c in checks)
+        record = {"id": identity, "at": now(), "attempt": item["attempt"], "passed": passed,
+                  "unchanged": before == after, "fingerprint": after,
+                  "review": str((evidence / "review.md").relative_to(self.home)),
+                  "review_sha256": hashlib.sha256(review.encode()).hexdigest(), "checks": checks}
+        atomic_json(evidence / "record.json", record)
+        item["verification"] = record
+        item["summary"] = "Independent verification passed" if passed else "Independent verification failed"
+        self.save()
+        self.event(args.id, "manager.verified", passed=passed, evidence=record["id"])
+        return record
+
+    def accept(self, args):
+        self.reconcile()
+        item = self.task(args.id)
+        record = item.get("verification")
+        if item["state"] != "verification" or not record or not record.get("passed"):
+            raise Error("accept requires successful independent verification")
+        review = self.home / record["review"]
+        directory = self.directory(args.id)
+        with lock(directory / ".report.lock"):
+            if (record["attempt"] != item["attempt"] or
+                    record["fingerprint"] != self.fingerprint(item) or
+                    hashlib.sha256(review.read_bytes()).hexdigest() != record["review_sha256"]):
+                item["verification"] = None
+                self.save()
+                raise Error("Worktree/report/review changed since verification; verify again")
+            # End the session before acceptance, then recheck for shutdown-time changes.
+            self.kill(item)
+            if record["fingerprint"] != self.fingerprint(item):
+                item["verification"] = None
+                self.save()
+                raise Error("Worker changed files while stopping; review and verify again")
+            item.update(state="done", summary="Manager accepted isolated result", accepted=now())
+            atomic_json(directory / "accepted.json", {"at": item["accepted"], "verification_id": record["id"]})
+        self.save()
+        self.event(args.id, "task.accepted", verification_id=record["id"])
+        return item
+
+    def escalate(self, args):
+        self.reconcile()
+        item = self.task(args.id)
+        if item["state"] != "needs_manager":
+            raise Error("escalate requires a worker question in needs_manager")
+        item.update(state="needs_user", summary=args.reason, verification=None)
+        self.save()
+        self.event(args.id, "manager.needs_user", reason=args.reason)
+        return item
+
+
+def parser():
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument("--root", default=os.getcwd(), help="Project checkout, before the subcommand")
+    sub = cli.add_subparsers(dest="action", required=True)
+    for name in ("init", "status", "reconcile", "events"):
+        sub.add_parser(name)
+    for name in ("task", "spawn"):
+        p = sub.add_parser(name)
+        p.add_argument("--id", required=True, type=task_id)
+        p.add_argument("--title")
+        p.add_argument("--brief", help="Path to a populated Markdown brief")
+        p.add_argument("--agent", choices=("auto", "codex", "claude"), default="auto")
+        p.add_argument("--kind", choices=("implementation", "research", "review", "verification"), default="implementation")
+        p.add_argument("--base", default="HEAD", help="Committed base containing prerequisites")
+        p.add_argument("--depends-on", type=task_id, action="append")
+    p = sub.add_parser("send")
+    p.add_argument("id", type=task_id)
+    p.add_argument("message", nargs="?")
+    p.add_argument("--message-file")
+    p.add_argument("--inbox-only", action="store_true")
+    for name in ("peek", "stop", "inbox", "accept"):
+        p = sub.add_parser(name)
+        p.add_argument("id", type=task_id)
+    p = sub.add_parser("retry")
+    p.add_argument("id", type=task_id)
+    p.add_argument("--agent", choices=("auto", "codex", "claude"))
+    p = sub.add_parser("report")
+    p.add_argument("id", type=task_id)
+    p.add_argument("--attempt", required=True, type=int)
+    p.add_argument("--state", choices=sorted(WORKER_STATES), required=True)
+    p.add_argument("--summary", required=True)
+    p.add_argument("--question")
+    p.add_argument("--question-type", choices=("technical", "product", "permission", "scope"), default="technical")
+    p.add_argument("--option", action="append", default=[])
+    p.add_argument("--file", action="append", default=[])
+    p.add_argument("--test-command")
+    p.add_argument("--test-result", choices=("passed", "failed", "not_run"))
+    p.add_argument("--ack", action="append", default=[])
+    p = sub.add_parser("verify")
+    p.add_argument("id", type=task_id)
+    p.add_argument("--review", required=True, help="Independent review of diff and acceptance criteria")
+    p.add_argument("--command", action="append", help="Reviewed shell command, repeatable")
+    p.add_argument("--timeout", type=int, default=600, help="Seconds per check")
+    p = sub.add_parser("escalate")
+    p.add_argument("id", type=task_id)
+    p.add_argument("--reason", required=True)
+    return cli
+
+
+def main():
+    args = parser().parse_args()
+    try:
+        worker = os.environ.get("MANAGER_WORKER_TASK")
+        if worker and (args.action not in ("report", "inbox") or args.id != worker):
+            raise Error("Worker sessions can only report and read their own inbox")
+        if worker and args.action == "report" and str(args.attempt) != os.environ.get("MANAGER_WORKER_ATTEMPT"):
+            raise Error("Worker attempt does not match its launch generation")
+        if args.action == "send" and (args.message is None) == (args.message_file is None):
+            raise Error("Provide one message or --message-file")
+        if args.action == "verify" and args.timeout < 1:
+            raise Error("--timeout must be positive")
+        runtime = Runtime(args.root)
+        if args.action in ("report", "inbox"):
+            if not runtime.state_path.is_file():
+                raise Error("Run manager init first")
+            result = runtime.report(args) if args.action == "report" else runtime.inbox(args.id)
+        else:
+            if args.action == "init":
+                runtime.home.mkdir(exist_ok=True)
+            if not runtime.home.is_dir():
+                raise Error("Run manager init first")
+            with lock(runtime.home / ".lock"):
+                if args.action == "init":
+                    result = runtime.init()
+                else:
+                    runtime.load()
+                    if args.action in ("status", "reconcile"):
+                        result = runtime.reconcile()
+                    elif args.action == "events":
+                        result = sorted([read_json(p) for p in (runtime.home / "events").glob("*/*.json")],
+                                        key=lambda e: (e["at"], e.get("task_id") or ""))
+                    elif args.action in ("task", "spawn"):
+                        existing = args.id in runtime.state["tasks"]
+                        if existing and args.action == "task":
+                            raise Error("Task already exists")
+                        if existing and (args.title or args.brief or args.depends_on or args.base != "HEAD"):
+                            raise Error("Existing task definitions cannot be overwritten by spawn")
+                        item = runtime.task(args.id) if existing else runtime.register(args)
+                        result = item if args.action == "task" else runtime.launch(item, args.agent if args.agent != "auto" else None)
+                    elif args.action == "peek":
+                        runtime.reconcile()
+                        item = runtime.task(args.id)
+                        if not item.get("pane"):
+                            raise Error("No pane; inspect the task's preserved log.txt instead")
+                        output = run(["tmux", "capture-pane", "-p", "-t", item["pane"], "-S", "-200"])
+                        result = {"task_id": args.id, "output": output.stdout.decode(errors="replace")}
+                    else:
+                        result = getattr(runtime, args.action)(args)
+        emit(result)
+        return 1 if args.action == "verify" and not result["passed"] else 0
+    except (Error, OSError, ValueError) as exc:
+        emit({"error": str(exc)})
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

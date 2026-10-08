@@ -1,9 +1,13 @@
 # Manager Skill — Design Document
 
-**Status:** Draft  
+**Status:** Architecture baseline（保留原始 Draft；實作狀態另行追蹤）<br>
 **Target:** Codex / Claude Code  
 **Runtime:** tmux + Git Worktree + Filesystem State  
 **Goal:** 將任意 Coding Agent 轉化為可自主規劃、委派、監督、驗證與回報的 Engineering Manager
+
+文件入口與維護方式見 [README](README.md)；實作現況見 [progress](progress.md)，開發任務見 [tasks](tasks.md)。本文件包含尚未實作的願景，不是目前 CLI 的使用手冊；已實作介面以 [runtime reference](../../skills/manager/references/runtime.md) 為準。
+
+2026-10-08 新增 [SPEC-001：多 Manager 隔離、整合與遷移](specs/001-multi-manager-isolation.md) 初稿，涉及本文件第 7、11、18–19、23、25–26、30 節。方向是 manager ID namespace、各 manager 獨立整合工作樹、共用交付協調及 v1 遷移。此 spec 與相關 ADR 尚待收斂、未實作；原章節保留為 v1 設計基線，待 spec 定案後更新對應架構摘要，不在本文件複製完整契約。
 
 ---
 

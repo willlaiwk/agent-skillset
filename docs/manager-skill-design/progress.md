@@ -1,18 +1,26 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-07。實作基線：`d8b0ca5`（`feat: add manager skill and local worker runtime`）。
+最後更新：2026-10-08。實作基線：`d8b0ca5`（`feat: add manager skill and local worker runtime`）；前次文件整理基線：`aae829b`。
 
-**目前狀態：MVP runtime 已實作，測試替身驗證通過；尚未完成真實 Agent 的端到端驗證。下一個建議任務是 MVP-02，尚未啟動。**
+**目前狀態：MVP runtime 已實作，測試替身驗證通過；尚未完成真實 Agent 的端到端驗證。2026-10-08 完成多 manager 的設計初稿與文件管理結構；新能力均未實作，本輪依使用者要求只寫文件。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
-2. 閱讀本文件，再按任務閱讀 [設計文件](design.md) 的相關章節；先看第 31–32 節的 MVP／Phase 2 邊界。
+2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 使用者若要求「繼續推進」但沒有指定其他目標，優先處理下面的 **MVP-02**。如果最新指示另有優先順序，以最新指示為準。
+4. 目前停在文件階段。下一輪若要求實作多 manager，從 **MM-01** 收斂 [SPEC-001](specs/001-multi-manager-isolation.md) 的未決契約，再按依賴實作；不要把初稿當作已支援能力。原 **MVP-02** 驗證缺口仍保留。最新指示另有優先順序時，以最新指示為準。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 本輪文件與下一步
+
+- `design.md` 保留整體架構基線，補功能索引；新的行為契約放在 SPEC-001，避免將所有討論整併成更大的單一設計文件。
+- README 定義 spec／ADR／task／progress 分工。ADR-0001 採用文件管理方式；ADR-0002–0004 仍為 Proposed。
+- SPEC-001 記錄 manager ID 建立／接續、完整 namespace、同 ID 主控、獨立整合工作樹、短鎖交付、migration 與 AC-01–AC-14。
+- MM-01 需收斂 owner／takeover、交付 workflow、migration 歷史證據及停止條件；MM-02–MM-08 均未開始。
+- 本輪文件驗證：9 份 Markdown 的 48 個本地連結（含章節錨點）與 code fence 配對檢查通過，`git diff --check` 通過；沒有重跑 runtime 測試，也未執行任何真實專案 migration。
 
 ## 已完成的實作
 
@@ -101,9 +109,9 @@ MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
 | 4 | P2-03：Automatic Verification | 從 repository 設定推導適當命令，同時保留獨立 review 與 acceptance gate |
 | 5 | P2-04：Routing／Retry Policy | 目前只有基本角色設定與有上限的手動 retry；再補 spec 描述的自動選擇與恢復策略 |
 
-以上順序是建議，尚未代表新的任務已開始。Phase 3（specialization、dynamic planning、cost／token budget、project knowledge）仍未實作。
+以上保留為 2026-10-07 的候選順序；最新任務狀態及多 manager 依賴以 [tasks.md](tasks.md) 為準，這裡不再維護另一份狀態表。MM-08 若完成原 MVP-02 驗收，可共用證據關閉缺口。Phase 3（specialization、dynamic planning、cost／token budget、project knowledge）仍未實作。
 
-## 本次交接變更
+## 2026-10-07 交接紀錄
 
 - 將 `docs/manager-skill-design.md` 原文搬移為 [design.md](design.md)，保留內容。
 - 新增本進度紀錄；設計與 Session 接續資訊集中在此資料夾。

@@ -1,20 +1,29 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-08。實作基線：`d8b0ca5`（`feat: add manager skill and local worker runtime`）；前次文件整理基線：`aae829b`。
+最後更新：2026-10-09。實作基線：`d8b0ca5`（`feat: add manager skill and local worker runtime`）；多 manager 初稿基線：`0b4083e`。
 
-**目前狀態：MVP runtime 已實作，測試替身驗證通過；尚未完成真實 Agent 的端到端驗證。2026-10-08 完成多 manager 的設計初稿與文件管理結構；新能力均未實作，本輪依使用者要求只寫文件。**
+**目前狀態：MM-01 契約收斂完成，SPEC-001 為 Ready，ADR-0002–0004 為 Accepted。下一步為 MM-02 namespace／路由實作；多 manager runtime 尚未實作。現有 MVP 與真實 Agent 驗證缺口保持原狀。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 目前停在文件階段。下一輪若要求實作多 manager，從 **MM-01** 收斂 [SPEC-001](specs/001-multi-manager-isolation.md) 的未決契約，再按依賴實作；不要把初稿當作已支援能力。原 **MVP-02** 驗證缺口仍保留。最新指示另有優先順序時，以最新指示為準。
+4. 接續 **MM-02**：先讀 [SPEC-001 §3–5](specs/001-multi-manager-isolation.md#3-manager-身分與選擇契約) 與 ADR-0002，實作 ID/selector、v2 schema、namespace、完整 launch identity、managers 與純讀取查閱；開始時更新 spec 為 Implementing。MM-01 已完成，不重做定案；Ready 不代表目前 CLI 已支援。原 **MVP-02** 缺口仍保留。最新指示另有優先順序時，以最新指示為準。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
 
-## 本輪文件與下一步
+## 2026-10-09：MM-01 完成與下一步
+
+- 定案 Q-01–Q-04：explicit owner claim/release/takeover 與長操作 fencing、未 checkout 本地 target 的 transaction/receipt gate、保留 branch/歷史且重驗資格的 forward migration，以及 source-quiesced/hash/locks 停止契約。詳細行為只維護在 SPEC-001，ADR 說明取捨。
+- 證據：[contract review](reviews/MM-01-contract-review.md) 的 12 項 walkthrough、[可重跑 Git probe](reviews/mm01_git_primitives.py) 與 [當次結果](reviews/mm01-git-results.json)。8 項 Git assertions 通過；另確認 expected OID 不防止同 OID symbolic-ref 切換，已明示合作式 workflow 邊界。
+- 實驗只在暫存 Git repo 執行，未啟動 provider/tmux/manager runtime，未遷移真實資料。本輪沒有修改 `skills/manager/`，未重跑既有 runtime tests；下方歷史結果仍只對應 MVP 基線。
+- 同步 README/design/task/progress、SPEC-001 與 ADR-0002–0004。文件驗證：10 份 Markdown、66 個本地連結／錨點及 code fence 配對通過；Git probe Python 語法、所有變更檔案行尾空白與 `git diff --check` 通過。
+- 接續 MM-02；MM-03–MM-08 仍依 tasks 的順序。現有主控／遷移／交付契約已收斂，沒有需使用者補答的 MM-01 blocker。
+- Git：本輪文件提交以 `docs: finalize multi-manager contracts for MM-01` 識別；commit hash 與後續未提交變更依實際 status/log 確認。
+
+## 2026-10-08：初稿文件紀錄
 
 - `design.md` 保留整體架構基線，補功能索引；新的行為契約放在 SPEC-001，避免將所有討論整併成更大的單一設計文件。
 - README 定義 spec／ADR／task／progress 分工。ADR-0001 採用文件管理方式；ADR-0002–0004 仍為 Proposed。
@@ -80,7 +89,7 @@ MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
 - **Worktree 不等於安全沙箱**：保留 provider 與主機的權限機制；Worker environment 的指令限制是合作協定，並非 OS 存取控制。
 - **指紋不是語意審查**：Manager 仍需判斷 review／測試是否充分。忽略檔案不納入指紋；submodule 內未提交內容沒有深入指紋驗證。
 
-## 下一個建議任務：MVP-02 — 真實 Worker smoke test
+## 原 MVP 驗證缺口：MVP-02 — 真實 Worker smoke test
 
 **目標**：在擴充排程前，確認真實互動式 Agent 能遵守 report／inbox／result 協定，並走完獨立驗收流程。這是依目前驗證缺口提出的建議，不是原 spec 額外定義的功能階段。
 

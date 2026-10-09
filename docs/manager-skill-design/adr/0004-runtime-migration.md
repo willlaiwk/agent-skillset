@@ -1,28 +1,38 @@
 # ADR-0004 — 格式遷移由 Manager Runtime 提供
 
-- 狀態：Proposed。
-- 日期：2026-10-08。
-- 關聯：[SPEC-001 §8–9](../specs/001-multi-manager-isolation.md#8-舊格式遷移契約)、[MM-06](../tasks.md)。
+- 狀態：Accepted；採用設計，runtime 尚未實作。
+- 日期：2026-10-08；定案：2026-10-09（MM-01）。
+- 關聯：[SPEC-001 §8–9](../specs/001-multi-manager-isolation.md#8-舊格式遷移契約)、[MM-06](../tasks.md)、[契約檢查](../reviews/MM-01-contract-review.md)。
 
 ## 背景
 
-從 `.manager/state.json` 遷到 `.manager/{id}/state.json` 牽涉絕對路徑、Git worktree 註冊、branches、worker 舊 prompt、attempt 與 verification 證據，單純搬資料夾無法保證恢復。遷移需要可重跑與中斷診斷。
+V1 → v2 牽涉絕對路徑、Git registration、branches、舊 prompt、attempt 與 verification。單純搬資料夾無法恢復；遷移須可重跑並診斷中斷。現有 v1 沒有常駐主控身分，runtime 不能自行證明舊 LLM Session 已離線。
 
-## 提議決策
+## 決策
 
-提供同一 CLI 的 `manager migrate --manager-id ID` 與純讀取 `--dry-run`。遷移目的 ID 必須明確指定，正常 init 不隱式遷移。原 manager skill 補上偵測、預覽、執行與恢復的指引，初期不另建 migration skill。
+由同一 CLI 提供 `migrate --manager-id ID`，目的 ID 必須明確；純讀取 `--dry-run` 回傳來源 inventory、hash 與阻塞。正常 init 不隱式遷移。原 manager skill 補遷移指引，不另建 migration skill。
 
-Runtime 使用版本化 schema、前置檢查、備份、journal、Git worktree 支援的搬移與遷移後一致性檢查。來源 workers 與舊 manager 必須先停止管理／寫入；歷史證據保留，失效驗證資格不能偽造修復。詳細契約由 spec 維護。
+執行需要 source hash 與明確 source-quiesced assertion，搭配來源鎖／tmux／Git inventory 預檢。Manager 先處理 Worker 回報與退出／刻意停止；migration 本身不自動停止。不能以 timeout／安靜或 done claim 取代確認無 writer，新舊 runtime 同時寫來源不受支援。
+
+Backup/journal 放 common control 的獨立 migration 目錄，保存全部管理／工作內容、staged index、private Git metadata、必要 objects 與 refs。保留舊 branch 原值，建立新的 namespaced branch，以 Git worktree move 搬移後切換分支；不 reset/stash/force。逐步 intent 與 snapshot 核對支持 forward resume，完成後以來源 tombstone 阻止舊 v1 init/load。首版不提供自動 rollback 或清理。
+
+Historical acceptance/verification 原文保存；當前資格清空，已接受／待驗證成果須重新 review/verify/accept 才能作依賴或交付來源。Legacy assignment 作廢，retry 使用新 attempt/assignment；不恢復舊 provider 對話。詳細 mapping、phases、狀態與故障情境在 SPEC-001 §8。
 
 ## 替代方案
 
-- 獨立 migration skill：仍需同一 deterministic runtime，且容易與 schema 更新不同步。
-- `init` 自動搬移：使用者尚未知道影響範圍就改動長期工作資料。
-- 手動 `mv` 加全目錄字串取代：破壞 Git registration 或歷史原文，無法提供可驗證續跑。
-- 丟棄舊資料重開：違反保留成果與接續需求。
+- 獨立 migration skill：仍需要相同 deterministic runtime，易與 schema 不同步。
+- Init 自動搬移：未預覽影響就改動長期資料。
+- 手動 mv／全目錄字串取代：破壞 Git registration 或歷史原文，無可靠續跑。
+- 更名／刪除舊 branch：減少 refs，卻破壞歷史引用；首版保留舊 ref 成本較低。
+- 重新算舊指紋延續 acceptance：沒有實際驗證，會偽造 gate 資格。
+- 自動 rollback：涉及共用 Git metadata、已搬移 dirty 內容及可能新資料，無法保證安全；先提供校驗備份與 forward resume。
 
 ## 代價與限制
 
-需要維護版本轉換及故障恢復測試，backup 可能占用較多空間。舊 runtime 不遵守新鎖，遷移前的停止條件不能省略。具體 rollback 範圍、branch mapping 與已接受任務的表示方式仍待 SPEC-001 Q-03／Q-04 收斂。
+備份及保留 refs 占空間；曾接受任務需重新驗證，依賴暫時阻擋。Source-quiesced 是呼叫端合作前提，不是 OS 或 LLM 存活證明。Submodule/locked/missing worktree 等無法安全搬移的來源在預檢阻擋，不能偷偷改為 force。
 
-若未來需要大量專案、多個工具的 migration orchestration，再評估獨立 skill；不在此次擴大範圍。
+如外部寫入使 journal 與來源/目的不一致，保留 backup 及兩側並報 ambiguous，需要刻意修復；不宣稱可自動處理所有損壞。未來大量跨專案 orchestration 再評估獨立 skill。
+
+## 定案結果
+
+2026-10-09 收斂 Q-03／Q-04，從 Proposed 改為 Accepted。Dirty/staged/untracked/ignored worktree 的 Git 搬移實驗與 migration 故障 walkthrough 見契約檢查；沒有對真實專案執行 migration，MM-06 尚未實作。

@@ -1,15 +1,15 @@
 # Manager Skill — 開發任務
 
-最後更新：2026-10-08。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
+最後更新：2026-10-09。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-本輪僅完成文件。SPEC-001 與 ADR-0002–0004 尚待收斂，MM 任務均未啟動；下一輪若要求實作，先從 MM-01 開始。任務順序是依賴安排，不代表已啟動 worker 或授權外部交付。
+2026-10-09 完成 MM-01：SPEC-001 為 Ready，ADR-0002–0004 為 Accepted。MM-02–MM-08 尚未開始；下一步從 MM-02 namespace 與路由實作接續。任務順序是依賴安排，不代表已啟動 worker 或授權外部交付。
 
 ## 任務索引
 
 | ID | 目標 | 狀態 | 依賴 | 對應規格／決策 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | 文件結構與此次設計初稿 | Done | 無 | ADR-0001；SPEC-001 初稿 |
-| MM-01 | 收斂多 manager 的介面與未決契約 | Todo | DOC-01 | SPEC-001 Q-01–Q-04；ADR-0002–0004 |
+| MM-01 | 收斂多 manager 的介面與未決契約 | Done | DOC-01 | SPEC-001 Q-01–Q-04；ADR-0002–0004 |
 | MM-02 | Manager selector、namespace 與 worker 路由 | Todo | MM-01 | SPEC-001 §3–5；ADR-0002 |
 | MM-03 | 同 ID 主控所有權與交接 | Todo | MM-02 | SPEC-001 §6；ADR-0002 |
 | MM-04 | 每 manager 的整合工作樹與證據 | Todo | MM-02 | SPEC-001 §7.1；ADR-0003 |
@@ -37,15 +37,16 @@ MVP-02 保留為原驗證缺口；若先實作 SPEC-001，MM-08 可涵蓋它，�
 
 - 目標：確認 selector／schema，定案主控 API、交付 workflow、migration branch mapping／backup／驗證歷史與停止條件。
 - 完成條件：SPEC-001 Q-01–Q-04 各有可實作答案與故障情境；更新相關 ADR 狀態與理由；spec 達到 Ready。
-- 驗證：用兩 Session、長 verify、過期 target、dirty legacy worktree 的具體流程檢查契約，不把 mock CLI 當已實作。
-- 證據／阻塞／接續：未開始；不需先啟動真實 worker 來寫規格。
+- 驗證：兩 Session、長 verify、過期 target、dirty legacy worktree 與中斷的 12 項 walkthrough；8 項暫存 Git assertions 通過，另確認 symbolic-ref 邊界。不把 Git primitive 當 v2 CLI 驗收。
+- 證據：[contract review](reviews/MM-01-contract-review.md)、[Git 結果](reviews/mm01-git-results.json)；Q-01–Q-04 定案，無待收斂 blocker。
+- 接續：MM-02。Runtime／provider 未修改或驗證；commit 以 Git 實際紀錄為準。
 
 ### MM-02 — Namespace 與路由
 
-- 目標：新 ID 建立／接續、明確 selector、v2 state、branch/tmux/path 與 worker identity 隔離、managers 清單。
+- 目標：新 ID 建立／接續、明確 selector、v2 state、branch/tmux/path 與 attempt/assignment identity 隔離、managers 清單及純讀取查閱。
 - 完成條件：AC-01–AC-05；不合法 ID、symlink、state 損壞與 legacy 格式有明確錯誤；每 manager 額度可辨識。
 - 驗證：暫存 Git repo 中並行初始化、兩 manager 同名 task、跨 manager report/ack／reconcile，不只測字串含 ID。
-- 證據／阻塞／接續：未開始；依賴 MM-01。
+- 證據／阻塞／接續：未開始；MM-01 依賴已完成。實作入口為 SPEC-001 §3–5（含 init 不自動 claim/reconcile、reserved IDs、common exclude 與 launch identity）；開始後更新 spec 為 Implementing。
 
 ### MM-03 — 主控所有權
 
@@ -63,14 +64,14 @@ MVP-02 保留為原驗證缺口；若先實作 SPEC-001，MM-08 可涵蓋它，�
 
 ### MM-05 — 共用交付 gate
 
-- 目標：common-directory 協調、短鎖交付、預期 target 檢查、失敗紀錄與恢復；先支援 MM-01 選定的 workflow。
+- 目標：common-directory 短 gate；首版只更新未 checkout 的既有本地分支，以 expected-OID transaction 與 receipt 支援故障診斷；不內建 push／PR。
 - 完成條件：AC-08–AC-09；過期成果不能覆蓋較新 target；checked-out branch 不被裸更新；不新增隱式 merge/push 授權。
 - 驗證：不同 root 共用 repository、兩候選競爭、外部 ref 改動、中斷與鎖釋放；等待決策／長驗證時其他 manager 能繼續準備。
 - 證據／阻塞／接續：未開始；依賴 MM-03、MM-04。
 
 ### MM-06 — Migration
 
-- 目標：dry-run、格式預檢、停止條件、完整 backup／journal、Git 支援的搬移、引用轉換、重跑／續跑及新格式恢復。
+- 目標：零寫入 dry-run、source hash/quiescence 預檢、完整 backup／journal、保留舊 refs／建立新 refs、Git worktree move、歷史資格失效、forward resume／tombstone；首版無自動 rollback。
 - 完成條件：AC-10–AC-13；保存 dirty/untracked/ignored 內容及歷史，不偽造驗證通過；舊 worker 不繼續寫新資料。
 - 驗證：v1 fixture、目的地衝突、symlink、未知版本、live worker、各階段注入故障、完成後重跑與失效 acceptance gate。
 - 證據／阻塞／接續：未開始；依賴 MM-02–MM-04；不對使用者真實專案試搬資料。

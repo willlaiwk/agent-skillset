@@ -1,32 +1,37 @@
 # ADR-0003 — 隔離 Manager 整合，序列化共同交付
 
-- 狀態：Proposed。
-- 日期：2026-10-08。
-- 關聯：[SPEC-001 §7](../specs/001-multi-manager-isolation.md#7-各自整合共用交付)、[MM-04–MM-05](../tasks.md)。
+- 狀態：Accepted；採用設計，runtime 尚未實作。
+- 日期：2026-10-08；定案：2026-10-09（MM-01）。
+- 關聯：[SPEC-001 §7](../specs/001-multi-manager-isolation.md#7-各自整合共用交付)、[MM-04–MM-05](../tasks.md)、[契約檢查](../reviews/MM-01-contract-review.md)。
 
 ## 背景
 
-Namespaced state 仍無法隔離同一主 checkout 的 checkout、merge、index 與未提交檔案。不同 worktree 也仍共用 Git refs 與部分 metadata。最後交付相同目標分支時，另一個 manager 可能已先更新目標。
+Namespaced state 無法隔離同一主 checkout 的 checkout、merge、index 與未提交檔案。不同 worktree 仍共用 Git refs 與部分 metadata。交付相同目標時，另一 manager 可能已先更新目標；檢查完 target 再無條件 merge 仍有競爭。
 
-## 提議決策
+## 決策
 
-各 manager 使用自己的整合分支及 `.manager/{id}/integration/` worktree，平行準備、解衝突、驗證，不在使用者主 checkout 操作。
+各 manager 使用自己的 integration branch 與 `.manager/{id}/integration/` worktree，從明確 committed base 平行準備、解衝突與驗證。使用者主 checkout 的 dirty 內容不搬移／stash／提交。Combined verification 綁定來源 acceptance、review、candidate 與 target snapshot。
 
-共用交付操作使用 Git common-directory 對應的協調鎖與 gate。準備與長時間驗證在鎖外；交付前取得鎖，核對驗證所對應的 target/candidate 與 Git 預期 ref。過期則釋放鎖並重新整合／驗證。交付保留來源與結果證據。
+第一版內建交付只支援既有、未在任何 registered worktree checkout 的本地分支 fast-forward。使用 canonical Git common-directory 的短 maintenance/delivery 鎖，在最後核對 evidence/ownership/inventory 後，以 Git expected-OID transaction 同時檢查 candidate、更新 target、建立唯一 receipt ref。Durable intent 與 receipt 分辨 ref 更新後、收據檔案前的中斷；不憑 target OID 相等猜測成功。
 
-本地 checkout 型交付使用專用 worktree；目標若已在使用者 checkout，拒絕裸更新 ref，使用 repository 的 PR/MR 流程或明確交接。第一版支援的 workflow 與更新機制在 SPEC-001 Q-02 定案。
+任何 checked-out target 一律拒絕。第一版不建立專用 delivery checkout，也不做 HEAD/index 同步恢復；常見主分支需要依既有 PR/MR 或明確交接流程另行交付。準備、長驗證與等待決策在 common 鎖外。詳細 workflow、API、重試與鎖順序在 SPEC-001 §6–7。
 
-這是交付協調設計，不啟用預設 auto-merge、auto-push 或部署，也不自動取得外部操作授權。
+不新增自動 merge/push/部署或授權。CLI token 與驗證紀錄不取代使用者／repository 的交付權限。
 
 ## 替代方案
 
-- 共用主 checkout 加大鎖：所有實作與 review 被序列化，長操作也容易阻塞其他 manager。
-- 不同 worktree 即完全隔離：忽略共用 refs 與交付目標的競爭。
-- 只在 merge 開始前看一次 target：無法辨識驗證後目標已變動。
-- 直接更新使用者 checkout 的 branch ref：可能造成 HEAD/index/檔案不一致。
+- 主 checkout 加大鎖：所有準備與 review 序列化，長操作阻塞其他 manager。
+- 不同 worktree 即完全隔離：忽略共用 refs 的競爭。
+- 只在 merge 前看一次 target：無法辨識 checks 後／寫入前的 ref 變更。
+- 專用 delivery worktree 更新已 checkout target：可擴大適用範圍，但 ref、index、working tree 的一致性與中斷恢復更複雜，首版延後。
+- 內建 PR/MR/push：需遠端權限、provider workflow 與新的相容性契約，不在本功能擴大範圍。
 
 ## 代價與限制
 
-新增整合工作樹與交付紀錄，必須處理 target 過期、鎖順序與中斷恢復。Git ref 原子檢查與 checkout 一致性仍需具體實作方案，不能只靠 advisory lock 宣稱已解決。
+常見 checked-out 主分支無法直接用這版 gate 交付；可保留已提交 candidate 走既有流程，不將它誤記為 gate 成功。新增 receipt refs/journal，須保留並驗證，沒有自動清理。
 
-外部 Git 工具不受此協作鎖約束，需檢查並拒絕不符合預期的變更。此階段不承諾自動背景排隊或喚醒 manager。
+External direct-ref OID 競爭由 transaction 偵測，但 Git expected OID 不防止外部 checkout 或轉成相同 OID 的 symbolic ref。此類 metadata 操作需合作遵守短區間維護協調；不能宣稱 advisory lock 是任意 Git 工具的強制管制。
+
+## 定案結果
+
+2026-10-09 收斂 Q-02，採取上述較小的本地 workflow，取代 Proposed 草案中待定的專用 checkout 型交付。暫存 Git 實驗確認 transaction、receipt 與 inventory 性質，也確認 symbolic-ref 邊界；結果見契約檢查。MM-04／MM-05 均尚未實作。

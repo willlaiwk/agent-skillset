@@ -1,0 +1,44 @@
+{
+  "scope": "Git primitives only; no manager v2 CLI or provider execution",
+  "git": "git version 2.55.0",
+  "checks": [
+    {
+      "check": "expected target + candidate + receipt transaction commits",
+      "passed": true
+    },
+    {
+      "check": "stale old OID rejects whole transaction including receipt",
+      "passed": true
+    },
+    {
+      "check": "prepared transaction without commit aborts",
+      "passed": true
+    },
+    {
+      "check": "receipt survives later target update",
+      "passed": true
+    },
+    {
+      "check": "inventory identifies checked-out target branch",
+      "passed": true
+    },
+    {
+      "check": "linked roots share canonical common directory",
+      "passed": true
+    },
+    {
+      "check": "dirty move + branch switch preserves HEAD/index/file bytes/symlink",
+      "passed": true
+    },
+    {
+      "check": "old ref retained and new ref checked out",
+      "passed": true
+    },
+    {
+      "check": "symbolic ref boundary probe",
+      "update_returncode": 0,
+      "remains_symbolic": false,
+      "note": "Expected OID alone must not be described as excluding concurrent symbolic-ref conversion."
+    }
+  ]
+}

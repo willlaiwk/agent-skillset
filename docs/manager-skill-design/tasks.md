@@ -1,8 +1,8 @@
 # Manager Skill — 開發任務
 
-最後更新：2026-10-09。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
+最後更新：2026-10-10。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-09 完成 MM-01：SPEC-001 為 Ready，ADR-0002–0004 為 Accepted。MM-02–MM-08 尚未開始；下一步從 MM-02 namespace 與路由實作接續。任務順序是依賴安排，不代表已啟動 worker 或授權外部交付。
+2026-10-10 完成 MM-02 namespace／路由與回歸驗證，SPEC-001 為 Implementing；MM-03 已有 basic claim/credential guard，接續完成交接與長操作 fencing。MM-04–MM-08 尚未開始。任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -10,8 +10,8 @@
 | --- | --- | --- | --- | --- |
 | DOC-01 | 文件結構與此次設計初稿 | Done | 無 | ADR-0001；SPEC-001 初稿 |
 | MM-01 | 收斂多 manager 的介面與未決契約 | Done | DOC-01 | SPEC-001 Q-01–Q-04；ADR-0002–0004 |
-| MM-02 | Manager selector、namespace 與 worker 路由 | Todo | MM-01 | SPEC-001 §3–5；ADR-0002 |
-| MM-03 | 同 ID 主控所有權與交接 | Todo | MM-02 | SPEC-001 §6；ADR-0002 |
+| MM-02 | Manager selector、namespace 與 worker 路由 | Done | MM-01 | SPEC-001 §3–5；ADR-0002 |
+| MM-03 | 同 ID 主控所有權與交接 | In progress | MM-02 | SPEC-001 §6；ADR-0002 |
 | MM-04 | 每 manager 的整合工作樹與證據 | Todo | MM-02 | SPEC-001 §7.1；ADR-0003 |
 | MM-05 | Repository 共用交付 gate | Todo | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
 | MM-06 | v1 → v2 migration 與中斷恢復 | Todo | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
@@ -23,7 +23,7 @@
 | P2-03 | Automatic Verification | Todo | MVP 驗證及另立 spec | design §24、§32 |
 | P2-04 | Routing／Retry Policy | Todo | MVP 驗證及另立 spec | design §21–22、§25、§32 |
 
-MVP-02 保留為原驗證缺口；若先實作 SPEC-001，MM-08 可涵蓋它，但只有實際證據符合原驗收條件後才能將兩者標為 Done。尚未選擇哪條路徑，不重複執行同樣 smoke test。
+MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它，但只有實際證據符合原驗收條件後才能將兩者標為 Done，不重複執行同樣 smoke test。
 
 ## 任務完成條件與接續
 
@@ -46,14 +46,16 @@ MVP-02 保留為原驗證缺口；若先實作 SPEC-001，MM-08 可涵蓋它，�
 - 目標：新 ID 建立／接續、明確 selector、v2 state、branch/tmux/path 與 attempt/assignment identity 隔離、managers 清單及純讀取查閱。
 - 完成條件：AC-01–AC-05；不合法 ID、symlink、state 損壞與 legacy 格式有明確錯誤；每 manager 額度可辨識。
 - 驗證：暫存 Git repo 中並行初始化、兩 manager 同名 task、跨 manager report/ack／reconcile，不只測字串含 ID。
-- 證據／阻塞／接續：未開始；MM-01 依賴已完成。實作入口為 SPEC-001 §3–5（含 init 不自動 claim/reconcile、reserved IDs、common exclude 與 launch identity）；開始後更新 spec 為 Implementing。
+- 證據：[MM-02 validation](reviews/MM-02-validation.md)、runtime/namespace helper 與行為測試；預設 35 項（34 通過、1 real-only 跳過），真實 tmux 35 項全通過，skill 格式與 YAML configuration 補驗通過。
+- 結果：AC-01–AC-05 的 deterministic 範圍完成；runtime 使用說明已同步。只有假的 provider，沒有真實 Agent 驗收；commit 以 Git 實際紀錄為準。
+- 接續：MM-03 主控交接／長操作。為啟動 v2 生命週期先接 basic claim 與寫入 credential guard；這些前置不代表 MM-03 Done。
 
 ### MM-03 — 主控所有權
 
 - 目標：單一主控、純讀取查閱、交接與舊主控 fencing；長 verify 期間與交接後結果提交可辨識。
 - 完成條件：AC-06；查閱不寫 registry；不同 Session 不會各自發送管理指示；長檢查不阻止 worker report。
 - 驗證：兩個 CLI 呼叫端的競爭、失聯／釋放／takeover、舊 token 與長操作收尾，並檢查例外釋放。
-- 證據／阻塞／接續：未開始；依賴 MM-02。
+- 證據／接續：MM-02 依賴完成；已實作 released owner、owner status/claim、private credential 與 generation/token guard，初步行為證據共用 MM-02 validation。仍需 release/takeover、claim/交接中斷恢復、operation lock、長 verify 鎖外 checks/收尾 fencing 及完整 AC-06 測試；目前 verify 仍全程持 registry lock。
 
 ### MM-04 — 獨立整合
 

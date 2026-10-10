@@ -25,6 +25,6 @@
 {{Relevant commands and manual checks; reasons for checks that cannot run}}
 
 ## Communication
-Report structured status using the supplied runtime, task ID, and attempt.
+Report structured status using the supplied runtime, canonical root, manager ID, task ID, attempt, and assignment ID.
 Ask the manager when blocked. Read and acknowledge your task inbox.
 Worker completion awaits independent manager verification.

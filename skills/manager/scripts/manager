@@ -11,19 +11,24 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 sys.dont_write_bytecode = True
 from lib import adapter
+from lib.namespace import Namespace, generated_id, manager_id, reject_symlinks
 
 HERE = Path(__file__).resolve()
 SKILL = HERE.parent.parent
 STATES = {"queued", "working", "needs_manager", "needs_user", "verification",
           "done", "failed", "cancelled"}
 WORKER_STATES = STATES - {"queued", "needs_user"}
+READ_FILES = None
+READ_DIRS = None
 DEFAULTS = {
     "manager": {"max_workers": 4, "stale_seconds": 900, "max_retries": 2},
     "agents": {"default": "auto"},
@@ -48,9 +53,15 @@ def emit(value):
 
 
 def run(argv, cwd=None, check=True, data=None):
+    environment = dict(os.environ)
+    if str(argv[0]) == "git":
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run([str(x) for x in argv], cwd=cwd, input=data,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=environment, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        raise Error("Command timed out: " + str(argv[0])) from exc
     except OSError as exc:
         raise Error(str(exc)) from exc
     if check and result.returncode:
@@ -64,9 +75,14 @@ def git(root, *args):
 
 
 def read_json(path):
+    reject_symlinks(path)
     try:
-        with path.open() as stream:
-            value = json.load(stream)
+        content = path.read_bytes()
+        if READ_FILES is not None:
+            if path in READ_FILES and READ_FILES[path] != content:
+                raise Error("Runtime busy/inconsistent read: " + str(path))
+            READ_FILES[path] = content
+        value = json.loads(content)
         if not isinstance(value, dict):
             raise ValueError("expected an object")
         return value
@@ -74,12 +90,37 @@ def read_json(path):
         raise Error("Cannot read " + str(path) + ": " + str(exc)) from exc
 
 
+def read_directory(path):
+    reject_symlinks(path)
+    entries = sorted(path.iterdir(), key=lambda p: p.name)
+    if READ_DIRS is not None:
+        names = tuple(p.name for p in entries)
+        if path in READ_DIRS and READ_DIRS[path] != names:
+            raise Error("Runtime busy/inconsistent inventory: " + str(path))
+        READ_DIRS[path] = names
+    return entries
+
+
+def check_read_consistency():
+    for path, expected in (READ_FILES or {}).items():
+        reject_symlinks(path)
+        if path.read_bytes() != expected:
+            raise Error("Runtime busy/inconsistent read; retry: " + str(path))
+    for path, expected in (READ_DIRS or {}).items():
+        reject_symlinks(path)
+        if tuple(sorted(p.name for p in path.iterdir())) != expected:
+            raise Error("Runtime busy/inconsistent inventory; retry: " + str(path))
+
+
 def atomic_text(path, content):
+    reject_symlinks(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise Error("Refusing symlink: " + str(path))
     fd, temporary = tempfile.mkstemp(prefix=".write-", dir=str(path.parent))
     try:
+        if path.exists():
+            os.fchmod(fd, path.stat().st_mode & 0o777)
         with os.fdopen(fd, "w") as stream:
             stream.write(content)
             stream.flush()
@@ -96,11 +137,21 @@ def atomic_json(path, value):
 
 @contextlib.contextmanager
 def lock(path):
-    if path.is_symlink():
-        raise Error("Refusing symlink lock: " + str(path))
+    reject_symlinks(path)
     with path.open("a") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
-        yield
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Error("Runtime busy: " + str(path))
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
 
 
 def task_id(value):
@@ -162,20 +213,35 @@ def config(root):
 
 
 class Runtime:
-    def __init__(self, root):
+    def __init__(self, root, identity=None, inventory=False):
         self.root = Path(git(Path(root).resolve(), "rev-parse", "--show-toplevel")).resolve()
-        self.home = self.root / ".manager"
-        self.state_path = self.home / "state.json"
-        self.key = hashlib.sha256(str(self.root).encode()).hexdigest()[:12]
-        self.session = "manager-" + self.key
-        if self.home.is_symlink():
-            raise Error(".manager must not be a symlink")
+        common = Path(git(self.root, "rev-parse", "--git-common-dir"))
+        self.common = (common if common.is_absolute() else self.root / common).resolve()
+        self.namespace = Namespace(self.root, self.common, identity)
+        if not inventory:
+            self.namespace.legacy_check()
+        self.manager_id = identity
+        self.home = self.namespace.home
+        self.key = self.namespace.key
+        self.control = self.namespace.control
         self.state = None
+        if self.home is None:
+            return
+        self.state_path = self.home / "state.json"
+        self.session = self.namespace.session
 
     def load(self):
+        self.namespace.validate_layout()
         self.state = read_json(self.state_path)
-        if self.state.get("version") != 1 or self.state.get("root") != str(self.root):
-            raise Error("Unsupported state version or moved project; preserve and repair state")
+        if (type(self.state.get("version")) is not int or self.state["version"] != 2
+                or not self.namespace.matches(self.state)
+                or self.state.get("project_key") != self.key
+                or self.state.get("git_common_dir") != str(self.common)
+                or self.state.get("session") != self.session):
+            raise Error("Unsupported state version or mismatched manager identity; preserve and repair state")
+        if self.state.get("migration"):
+            raise Error("Migration pending; inspect its journal and resume explicitly")
+        self.owner()
         if not isinstance(self.state.get("tasks"), dict):
             raise Error("Invalid task registry")
         for identity, item in self.state["tasks"].items():
@@ -185,28 +251,31 @@ class Runtime:
                 raise Error("Invalid persisted task ID") from exc
             if not isinstance(item, dict) or not isinstance(item.get("state"), str) or item["state"] not in STATES:
                 raise Error("Invalid task record: " + identity)
-            required = {"task_id", "title", "kind", "agent", "dependencies", "base",
-                        "branch", "worktree", "window", "attempt", "state", "summary"}
-            if (not required.issubset(item) or item["task_id"] != identity or
+            required = {"task_id", "title", "kind", "agent", "dependencies", "base", "assignment_id",
+                        "branch", "worktree", "window", "attempt", "state", "summary", "root", "manager_id",
+                        "accepted_history", "acceptance_eligibility"}
+            if (not required.issubset(item) or not self.namespace.matches(item, identity) or
                     type(item["attempt"]) is not int or item["attempt"] < 0 or
                     not isinstance(item["dependencies"], list) or
                     any(not isinstance(d, str) or d == identity or d not in self.state["tasks"]
                         for d in item["dependencies"]) or
-                    item["branch"] != "manager/" + self.key + "/" + identity or
-                    item["window"] != "mgr-" + identity):
+                    item["branch"] != self.namespace.branch(identity) or
+                    item["window"] != "mgr-" + identity or
+                    item["acceptance_eligibility"] not in ("unaccepted", "reverify_required", "current") or
+                    (item["attempt"] == 0 and item["assignment_id"] is not None) or
+                    (item["attempt"] > 0 and not self.valid_assignment_id(item["assignment_id"]))):
                 raise Error("Invalid persisted task metadata: " + identity)
             if item.get("worktree") != str(self.home / "worktrees" / identity):
                 raise Error("Invalid worktree path: " + identity)
+            for parent in ("tasks", "inbox", "events", "worktrees"):
+                reject_symlinks(self.home / parent / identity)
 
     def save(self):
         self.state["updated_at"] = now()
         atomic_json(self.state_path, self.state)
 
     def directory(self, identity):
-        path = self.home / "tasks" / identity
-        if path.is_symlink():
-            raise Error("Task directory is a symlink")
-        return path
+        return reject_symlinks(self.home / "tasks" / identity)
 
     def task(self, identity):
         if identity not in self.state["tasks"]:
@@ -216,33 +285,138 @@ class Runtime:
     def event(self, identity, kind, **details):
         path = self.home / "events" / (identity or "manager")
         atomic_json(path / (uuid.uuid4().hex + ".json"),
-                    {"type": kind, "task_id": identity, "at": now(), **details})
+                    {**self.namespace.envelope(identity), "type": kind, "at": now(), **details})
 
     def init(self):
         config(self.root)  # Reject unsupported config before writing project state.
+        self.namespace.legacy_check()
         if self.state_path.exists():
             self.load()
-            return {"initialized": False, "root": str(self.root)}
-        artifacts = [p for p in self.home.iterdir() if p.name != ".lock"]
-        if artifacts:
-            raise Error("State missing but runtime artifacts exist; preserve and repair them")
+            return self.init_result(False)
+        if self.home.exists():
+            self.load()  # Another initializer may have atomically published since exists() above.
+            return self.init_result(False)
         git(self.root, "rev-parse", "--verify", "HEAD")
-        ignore = self.root / ".gitignore"
-        if ignore.is_symlink():
-            raise Error("Refusing symlink .gitignore")
-        text = ignore.read_text() if ignore.exists() else ""
-        if not run(["git", "-C", self.root, "check-ignore", "--no-index", "--quiet",
-                    ".manager/state.json"], check=False).returncode == 0:
-            with ignore.open("a") as stream:
-                stream.write(("\n" if text and not text.endswith("\n") else "") +
-                             "\n# Local manager runtime\n/.manager/\n")
-        for name in ("events", "inbox", "tasks", "worktrees"):
-            (self.home / name).mkdir()
-        self.state = {"version": 1, "root": str(self.root), "session": self.session,
-                      "created_at": now(), "tasks": {}}
-        self.save()
-        self.event(None, "manager.initialized")
-        return {"initialized": True, "root": str(self.root), "state": str(self.state_path)}
+        exclude = reject_symlinks(self.common / "info" / "exclude")
+        old_exclude = exclude.read_text() if exclude.exists() else ""
+        self.control.mkdir(exist_ok=True)
+        with lock(self.control / "maintenance.lock"):
+            self.namespace.legacy_check()
+            if self.home.exists():
+                self.load()
+                return self.init_result(False)
+            binding = self.control / "projects" / (self.key + ".json")
+            if binding.exists() and read_json(binding).get("root") != str(self.root):
+                raise Error("Project key collision; refusing another root's resources")
+            old_exclude = exclude.read_text() if exclude.exists() else ""
+            container = self.namespace.container
+            container.mkdir(exist_ok=True)
+            stage = container / (".init-" + uuid.uuid4().hex)
+            stage.mkdir()
+            for name in ("events", "inbox", "tasks", "worktrees"):
+                (stage / name).mkdir()
+            self.state = {**self.namespace.envelope(), "version": 2, "project_key": self.key,
+                          "git_common_dir": str(self.common), "session": self.session,
+                          "created_at": now(), "updated_at": now(), "tasks": {}}
+            atomic_json(stage / "state.json", self.state)
+            atomic_json(stage / "owner.json", {**self.namespace.envelope(), "version": 1,
+                        "generation": 0, "state": "released", "session_id": None,
+                        "token_sha256": None, "acquired_at": None,
+                        "last_activity_at": None, "released_at": None})
+            (stage / ".lock").touch()
+            atomic_json(stage / "events" / "manager" / (uuid.uuid4().hex + ".json"),
+                        {**self.namespace.envelope(), "type": "manager.initialized", "at": now()})
+            atomic_json(binding, {"root": str(self.root), "project_key": self.key})
+            if "/.manager/" not in old_exclude.splitlines():
+                atomic_text(exclude, old_exclude +
+                            ("\n" if old_exclude and not old_exclude.endswith("\n") else "") + "/.manager/\n")
+            stage.rename(self.home)
+        return self.init_result(True)
+
+    def init_result(self, initialized):
+        return {"initialized": initialized, "root": str(self.root), "manager_id": self.manager_id,
+                "version": 2, "home": str(self.home), "state": str(self.state_path),
+                "owner": self.owner_summary(), "max_workers": config(self.root)["manager"]["max_workers"]}
+
+    @staticmethod
+    def valid_assignment_id(value):
+        return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{32}", value) is not None
+
+    def owner(self):
+        record = read_json(self.home / "owner.json")
+        if (type(record.get("version")) is not int or record["version"] != 1
+                or not self.namespace.matches(record)
+                or type(record.get("generation")) is not int or record["generation"] < 0
+                or record.get("state") not in ("active", "released")
+                or (record["state"] == "active" and
+                    (not isinstance(record.get("session_id"), str) or not record["session_id"].strip()
+                     or not isinstance(record.get("token_sha256"), str)
+                     or re.fullmatch(r"[a-f0-9]{64}", record["token_sha256"]) is None))
+                or (record["state"] == "released" and record.get("token_sha256") is not None)):
+            raise Error("Invalid owner identity or metadata; preserve and repair")
+        return record
+
+    def owner_summary(self):
+        return {k: v for k, v in self.owner().items() if k != "token_sha256"}
+
+    def require_owner(self, filename):
+        if not filename:
+            raise Error("Management writes require --owner-file; claim this manager explicitly")
+        path = Path(filename).expanduser()
+        if path.is_symlink():
+            raise Error("Refusing symlink owner credential")
+        path = path.parent.resolve() / path.name
+        if path.stat().st_mode & 0o077:
+            raise Error("Owner credential must be private (0600)")
+        credential, owner = read_json(path), self.owner()
+        token = credential.get("token")
+        if (owner["state"] != "active" or not self.namespace.matches(credential)
+                or type(credential.get("version")) is not int or credential["version"] != 1
+                or type(credential.get("generation")) is not int
+                or credential.get("generation") != owner["generation"]
+                or not isinstance(token, str) or len(token) != 64
+                or not secrets.compare_digest(hashlib.sha256(token.encode()).hexdigest(),
+                                              owner["token_sha256"] or "")):
+            raise Error("Invalid or fenced owner credential for this manager")
+        return owner
+
+    def claim(self, args):
+        owner = self.owner()
+        if owner["state"] != "released":
+            raise Error("Manager already has an active owner; takeover is pending MM-03")
+        if not args.session_id.strip() or len(args.session_id) > 128:
+            raise Error("Session ID must be nonempty and at most 128 characters")
+        filename = Path(args.credential_file).expanduser()
+        if filename.is_symlink():
+            raise Error("Refusing symlink owner credential")
+        filename = filename.parent.resolve() / filename.name
+        reject_symlinks(filename)
+        if (self.namespace.container == filename or self.namespace.container in filename.parents
+                or self.control == filename or self.control in filename.parents):
+            raise Error("Keep owner credentials outside manager and worker artifact directories")
+        # Worktrees from other managers share this host: exclude every registered tree too.
+        for tree in self.worktrees():
+            if str(filename) == tree or tree in (str(p) for p in filename.parents):
+                # Credentials in the main project outside .manager are allowed; private worker trees are not.
+                if tree != str(self.root):
+                    raise Error("Keep owner credentials outside worker worktrees")
+        token = secrets.token_hex(32)
+        generation = owner["generation"] + 1
+        credential = {**self.namespace.envelope(), "version": 1,
+                      "generation": generation, "token": token}
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(credential) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        operation = uuid.uuid4().hex
+        owner.update(generation=generation, state="active", session_id=args.session_id,
+                     token_sha256=hashlib.sha256(token.encode()).hexdigest(), acquired_at=now(),
+                     last_activity_at=now(), released_at=None, operation_id=operation)
+        atomic_json(self.home / "owner.json", owner)
+        self.event(None, "owner.claimed", generation=generation, session_id=args.session_id,
+                   operation_id=operation)
+        return {**self.owner_summary(), "credential_file": str(filename)}
 
     def register(self, args):
         if args.id in self.state["tasks"]:
@@ -258,13 +432,14 @@ class Runtime:
         for identity in dependencies:
             self.task(identity)
         base = git(self.root, "rev-parse", "--verify", "--end-of-options", args.base + "^{commit}")
-        item = {"task_id": args.id, "title": args.title, "kind": args.kind,
+        item = {**self.namespace.envelope(args.id), "title": args.title, "kind": args.kind,
                 "agent": args.agent, "dependencies": dependencies, "base": base,
-                "branch": "manager/" + self.key + "/" + args.id,
+                "branch": self.namespace.branch(args.id),
                 "worktree": str(self.home / "worktrees" / args.id),
                 "window": "mgr-" + args.id, "pane": None, "attempt": 0,
                 "state": "queued", "summary": "Queued", "created_at": now(),
-                "verification": None, "accepted": None, "report_error": None}
+                "assignment_id": None, "verification": None, "accepted": None,
+                "accepted_history": None, "acceptance_eligibility": "unaccepted", "report_error": None}
         directory = self.directory(args.id)
         if directory.exists():
             raise Error("Unregistered task artifacts exist; preserve and inspect them")
@@ -279,7 +454,8 @@ class Runtime:
         return item
 
     def initial_report(self, item, state):
-        return {"task_id": item["task_id"], "attempt": item["attempt"], "state": state,
+        return {**self.namespace.envelope(item["task_id"]), "attempt": item["attempt"],
+                "assignment_id": item["assignment_id"], "state": state,
                 "summary": item["summary"], "question": None, "updated_at": now(), "acks": []}
 
     def panes(self):
@@ -292,6 +468,10 @@ class Runtime:
                                          "No such file or directory")):
                 return {}
             raise Error("tmux inventory failed: " + error.strip())
+        for option, expected in (("@manager_root", str(self.root)), ("@manager_id", self.manager_id)):
+            value = run(["tmux", "show-options", "-qv", "-t", self.session, option]).stdout.decode().strip()
+            if value != expected:
+                raise Error("tmux session identity mismatch; refusing to inspect or control another session")
         inventory = {}
         for line in result.stdout.decode().splitlines():
             window, pane, dead = line.split("\t")
@@ -311,7 +491,7 @@ class Runtime:
                 records[current]["branch"] = field[7:]
         return records
 
-    def reconcile(self):
+    def reconcile(self, persist=True):
         settings = config(self.root)
         inventory, worktrees = self.panes(), self.worktrees()
         notices = []
@@ -320,13 +500,14 @@ class Runtime:
             report = None
             try:
                 report = read_json(self.directory(identity) / "status.json")
-                if (report.get("task_id") != identity or type(report.get("attempt")) is not int
+                if (not self.namespace.matches(report, identity) or type(report.get("attempt")) is not int
                         or report.get("attempt") != item["attempt"]
+                        or report.get("assignment_id") != item["assignment_id"]
                         or report.get("state") not in WORKER_STATES | {"queued"} or
                         not isinstance(report.get("summary"), str)):
                     raise Error("Invalid report identity, attempt, state, or summary")
                 if report["state"] == "done":
-                    result_path = self.directory(identity) / "result.md"
+                    result_path = reject_symlinks(self.directory(identity) / "result.md")
                     if not result_path.is_file() or not result_path.read_text().strip():
                         raise Error("Worker completion has no nonempty result.md")
                 if report["state"] == "needs_manager" and (
@@ -367,18 +548,23 @@ class Runtime:
                     item["state"], item["summary"] = report["state"], report["summary"]
             if item.get("stale") and item["state"] not in ("done", "cancelled", "queued"):
                 notices.append({"task_id": identity, "issue": "stale_report"})
-            if previous != (item["state"], item["summary"], item.get("report_error")):
+            if persist and previous != (item["state"], item["summary"], item.get("report_error")):
                 self.event(identity, "task.reconciled", state=item["state"], summary=item["summary"])
         known = {x["window"] for x in self.state["tasks"].values()}
         orphans = {name: pane for name, pane in inventory.items()
                    if name.startswith("mgr-") and name not in known}
         known_trees = {x["worktree"] for x in self.state["tasks"].values()}
-        orphan_trees = [str(p) for p in (self.home / "worktrees").iterdir()
+        orphan_trees = [str(p) for p in read_directory(self.home / "worktrees")
                         if str(p) not in known_trees]
-        orphan_tasks = [str(p) for p in (self.home / "tasks").iterdir()
+        orphan_tasks = [str(p) for p in read_directory(self.home / "tasks")
                         if p.is_dir() and p.name not in self.state["tasks"]]
-        self.save()
-        return {"tasks": list(self.state["tasks"].values()), "notices": notices,
+        if persist:
+            self.save()
+        active = sum(not p["dead"] for name, p in inventory.items() if name.startswith("mgr-"))
+        return {"root": str(self.root), "manager_id": self.manager_id,
+                "tasks": list(self.state["tasks"].values()), "notices": notices,
+                "worker_capacity": {"active": active, "max_workers": settings["manager"]["max_workers"],
+                                    "scope": "manager"},
                 "orphan_panes": orphans, "orphan_worktrees": orphan_trees,
                 "orphan_tasks": orphan_tasks}
 
@@ -387,7 +573,8 @@ class Runtime:
         if item["state"] != "queued":
             raise Error("spawn requires a queued task; use retry for failed work")
         for identity in item["dependencies"]:
-            if self.task(identity)["state"] != "done":
+            if (self.task(identity)["state"] != "done" or
+                    self.task(identity)["acceptance_eligibility"] != "current"):
                 raise Error("Dependency is not manager-accepted: " + identity)
         settings = config(self.root)
         active = sum(not p["dead"] for name, p in self.panes().items() if name.startswith("mgr-"))
@@ -402,31 +589,24 @@ class Runtime:
             raise Error(str(exc)) from exc
         # Check tmux before creating branches/worktrees.
         run(["tmux", "-V"])
-        tree = Path(item["worktree"])
+        tree = reject_symlinks(Path(item["worktree"]))
         if not tree.exists():
             exists = run(["git", "-C", self.root, "show-ref", "--verify", "--quiet",
                           "refs/heads/" + item["branch"]], check=False).returncode == 0
             if exists:
                 raise Error("Task branch already exists without its worktree; inspect before recovery")
             git(self.root, "worktree", "add", "-b", item["branch"], str(tree), item["base"])
-            # Uncommitted .gitignore changes in the source tree do not enter a worktree.
-            common = Path(git(self.root, "rev-parse", "--git-common-dir"))
-            if not common.is_absolute():
-                common = self.root / common
-            exclude = common / "info" / "exclude"
-            exclude.parent.mkdir(exist_ok=True)
-            old = exclude.read_text() if exclude.exists() else ""
-            if "/.manager/" not in old.splitlines():
-                with exclude.open("a") as stream:
-                    stream.write(("\n" if old and not old.endswith("\n") else "") + "/.manager/\n")
         elif not item.get("worktree_valid"):
             raise Error("Worktree registration or branch does not match the task")
         directory = self.directory(item["task_id"])
+        reject_symlinks(directory / "log.txt")
         item["attempt"] += 1
+        item["assignment_id"] = uuid.uuid4().hex
         item.update(state="working", summary="Worker starting", agent=name,
                     verification=None, accepted=None, report_error=None)
-        assignment = {"task_id": item["task_id"], "attempt": item["attempt"],
-                      "root": str(self.root), "worktree": str(tree), "runtime": str(HERE),
+        assignment = {**self.namespace.envelope(item["task_id"]), "version": 2,
+                      "attempt": item["attempt"], "assignment_id": item["assignment_id"],
+                      "reporting_enabled": True, "worktree": str(tree), "runtime": str(HERE),
                       "auto_commit": settings["git"]["auto_commit"]}
         with lock(directory / ".report.lock"):
             atomic_json(directory / "assignment.json", assignment)
@@ -435,8 +615,9 @@ class Runtime:
                   "Read repository instructions and these files before working: " + str(directory / "brief.md") +
                   "; " + str(directory / "assignment.json") + "; " + str(SKILL / "references/worker-protocol.md") +
                   ". Work only in " + str(tree) + ". Use the absolute runtime " + str(HERE) +
-                  " with --root " + shlex.quote(str(self.root)) + " report " + item["task_id"] +
-                  " --attempt " + str(item["attempt"]) + " to report status. Read your inbox and prior result "
+                  " with --root " + shlex.quote(str(self.root)) + " --manager-id " + self.manager_id +
+                  " report " + item["task_id"] + " --attempt " + str(item["attempt"]) +
+                  " --assignment-id " + item["assignment_id"] + " to report status. Read your inbox and prior result "
                   "if present. Ask the manager through needs_manager; never bypass native permissions. "
                   "Write result.md before reporting done; manager acceptance is independent. " +
                   ("Commit only task-owned changes if repository/user policy permits."
@@ -444,13 +625,19 @@ class Runtime:
         writable = [directory, self.home / "events" / item["task_id"],
                     self.home / "inbox" / item["task_id"]]
         argv = adapter.command(name, executable, tree, writable, prompt)
-        env = ["env", "MANAGER_WORKER_TASK=" + item["task_id"],
-               "MANAGER_WORKER_ATTEMPT=" + str(item["attempt"])]
+        env = ["env", "-u", "MANAGER_OWNER_FILE", "MANAGER_WORKER_ROOT=" + str(self.root),
+               "MANAGER_WORKER_MANAGER=" + self.manager_id, "MANAGER_WORKER_TASK=" + item["task_id"],
+               "MANAGER_WORKER_ATTEMPT=" + str(item["attempt"]),
+               "MANAGER_WORKER_ASSIGNMENT=" + item["assignment_id"]]
         self.save()  # Persist intent before starting a process.
         self.event(item["task_id"], "worker.starting", attempt=item["attempt"], agent=name)
         try:
             if run(["tmux", "has-session", "-t", self.session], check=False).returncode:
                 run(["tmux", "new-session", "-d", "-s", self.session, "-n", "control", "-c", self.root])
+                run(["tmux", "set-option", "-t", self.session, "@manager_root", str(self.root)])
+                run(["tmux", "set-option", "-t", self.session, "@manager_id", self.manager_id])
+            else:
+                self.panes()  # Refuse existing sessions without matching metadata.
             # Set remain-on-exit before launch so immediate CLI errors remain inspectable.
             run(["tmux", "set-option", "-t", self.session, "remain-on-exit", "on"])
             pane = run(["tmux", "new-window", "-d", "-t", self.session + ":", "-n", item["window"],
@@ -470,24 +657,34 @@ class Runtime:
     def report(self, args):
         directory = self.directory(args.id)
         with lock(directory / ".report.lock"):
-            assignment = read_json(directory / "assignment.json")
-            if assignment.get("task_id") != args.id or assignment.get("attempt") != args.attempt:
+            assignment = self.assignment(args.id)
+            if (assignment["attempt"] != args.attempt or
+                    assignment["assignment_id"] != args.assignment_id):
                 raise Error("Stale or invalid attempt; read assignment.json")
             if (directory / "accepted.json").exists() or (directory / "stopped.json").exists():
                 raise Error("Task is accepted or stopped; no more worker reports allowed")
             old = read_json(directory / "status.json")
+            if (not self.namespace.matches(old, args.id) or old.get("attempt") != assignment["attempt"]
+                    or old.get("assignment_id") != assignment["assignment_id"]):
+                raise Error("Invalid current report identity; preserve and diagnose")
             if args.state == "needs_manager" and not args.question:
                 raise Error("needs_manager requires --question")
             if args.state == "done":
-                path = directory / "result.md"
+                path = reject_symlinks(directory / "result.md")
                 if not path.is_file() or not path.read_text().strip():
                     raise Error("done requires nonempty result.md")
             acks = set(old.get("acks", []))
             for message in args.ack:
                 if not re.fullmatch(r"[a-f0-9]{32}", message) or not (self.home / "inbox" / args.id / (message + ".json")).is_file():
                     raise Error("Unknown inbox message: " + message)
+                record = read_json(self.home / "inbox" / args.id / (message + ".json"))
+                if (not self.namespace.matches(record, args.id) or record.get("message_id") != message
+                        or record.get("attempt") != args.attempt
+                        or record.get("assignment_id") != args.assignment_id):
+                    raise Error("Inbox message belongs to another manager, task or attempt")
                 acks.add(message)
-            value = {"task_id": args.id, "attempt": args.attempt, "state": args.state,
+            value = {**self.namespace.envelope(args.id), "attempt": args.attempt,
+                     "assignment_id": args.assignment_id, "state": args.state,
                      "summary": args.summary, "question": None, "updated_at": now(), "acks": sorted(acks)}
             if args.question:
                 value["question"] = {"type": args.question_type, "text": args.question, "options": args.option}
@@ -501,12 +698,45 @@ class Runtime:
             self.event(args.id, "worker." + args.state, attempt=args.attempt)
             return value
 
+    def assignment(self, identity):
+        record = read_json(self.directory(identity) / "assignment.json")
+        if (type(record.get("version")) is not int or record["version"] != 2
+                or not self.namespace.matches(record, identity)
+                or type(record.get("attempt")) is not int or record["attempt"] < 1
+                or not self.valid_assignment_id(record.get("assignment_id"))
+                or record.get("reporting_enabled") is not True
+                or record.get("worktree") != str(self.home / "worktrees" / identity)):
+            raise Error("Invalid, migrated or revoked worker assignment")
+        return record
+
     def inbox(self, identity):
         directory = self.directory(identity)
         report = read_json(directory / "status.json")
+        if not self.namespace.matches(report, identity):
+            raise Error("Invalid inbox report identity")
         acks = set(report.get("acks", []))
-        messages = [read_json(p) for p in sorted((self.home / "inbox" / identity).glob("*.json"))]
-        return [{**m, "acknowledged": m["message_id"] in acks} for m in messages]
+        messages = [read_json(p) for p in read_directory(self.home / "inbox" / identity)
+                    if p.suffix == ".json"]
+        result = []
+        for message in messages:
+            if (not self.namespace.matches(message, identity)
+                    or not self.valid_assignment_id(message.get("assignment_id"))
+                    or not self.valid_assignment_id(message.get("message_id"))
+                    or type(message.get("attempt")) is not int or message["attempt"] < 1):
+                raise Error("Invalid inbox message identity")
+            current = (message["attempt"] == report.get("attempt") and
+                       message["assignment_id"] == report.get("assignment_id"))
+            history_acks = set()
+            if not current:
+                history = directory / "history" / ("attempt-" + str(message["attempt"])) / "status.json"
+                if history.exists():
+                    previous = read_json(history)
+                    if (self.namespace.matches(previous, identity) and
+                            previous.get("assignment_id") == message["assignment_id"]):
+                        history_acks = set(previous.get("acks", []))
+            result.append({**message, "current_attempt": current,
+                           "acknowledged": message["message_id"] in (acks if current else history_acks)})
+        return result
 
     def send(self, args):
         self.reconcile()
@@ -518,7 +748,8 @@ class Runtime:
             raise Error("Message must not be empty")
         identity = uuid.uuid4().hex
         path = self.home / "inbox" / args.id / (identity + ".json")
-        value = {"message_id": identity, "task_id": args.id, "at": now(),
+        value = {**self.namespace.envelope(args.id), "message_id": identity, "at": now(),
+                 "attempt": item["attempt"], "assignment_id": item["assignment_id"],
                  "text": message, "delivery": "inbox"}
         atomic_json(path, value)  # Always save before attempting terminal delivery.
         item["verification"] = None
@@ -561,12 +792,18 @@ class Runtime:
     def stop(self, args):
         item = self.task(args.id)
         directory = self.directory(args.id)
+        self.panes()  # Diagnose ownership before publishing any stop marker.
         with lock(directory / ".report.lock"):
-            atomic_json(directory / "stopped.json", {"at": now(), "attempt": item["attempt"]})
+            atomic_json(directory / "stopped.json", {**self.namespace.envelope(args.id),
+                        "at": now(), "attempt": item["attempt"], "assignment_id": item["assignment_id"]})
             self.kill(item)
             if item["state"] != "done":
                 item.update(state="cancelled", summary="Stopped by manager", verification=None)
-                atomic_json(directory / "status.json", self.initial_report(item, "cancelled"))
+                previous = read_json(directory / "status.json")
+                report = self.initial_report(item, "cancelled")
+                if self.namespace.matches(previous, args.id):
+                    report["acks"] = previous.get("acks", [])
+                atomic_json(directory / "status.json", report)
         self.save()
         self.event(args.id, "worker.stopped")
         return item
@@ -583,6 +820,8 @@ class Runtime:
         self.kill(item)
         directory = self.directory(args.id)
         with lock(directory / ".report.lock"):
+            previous = read_json(directory / "status.json")
+            atomic_json(directory / "history" / ("attempt-" + str(item["attempt"])) / "status.json", previous)
             for filename in ("stopped.json", "accepted.json"):
                 marker = directory / filename
                 if marker.exists():
@@ -613,7 +852,7 @@ class Runtime:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(chunk)
         for filename in ("status.json", "result.md"):
-            path = self.directory(item["task_id"]) / filename
+            path = reject_symlinks(self.directory(item["task_id"]) / filename)
             digest.update(path.read_bytes() if path.exists() else b"missing")
         return digest.hexdigest()
 
@@ -663,7 +902,8 @@ class Runtime:
                            "log": str(output.relative_to(self.home))})
         after = self.fingerprint(item)
         passed = before == after and all(c["exit_code"] == 0 for c in checks)
-        record = {"id": identity, "at": now(), "attempt": item["attempt"], "passed": passed,
+        record = {**self.namespace.envelope(args.id), "id": identity, "at": now(),
+                  "attempt": item["attempt"], "assignment_id": item["assignment_id"], "passed": passed,
                   "unchanged": before == after, "fingerprint": after,
                   "review": str((evidence / "review.md").relative_to(self.home)),
                   "review_sha256": hashlib.sha256(review.encode()).hexdigest(), "checks": checks}
@@ -678,9 +918,13 @@ class Runtime:
         self.reconcile()
         item = self.task(args.id)
         record = item.get("verification")
-        if item["state"] != "verification" or not record or not record.get("passed"):
+        if (item["state"] != "verification" or not record or not record.get("passed")
+                or not self.namespace.matches(record, args.id)
+                or not self.valid_assignment_id(record.get("id"))
+                or record.get("assignment_id") != item["assignment_id"]
+                or record.get("review") != "tasks/" + args.id + "/verification/" + record["id"] + "/review.md"):
             raise Error("accept requires successful independent verification")
-        review = self.home / record["review"]
+        review = reject_symlinks(self.home / record["review"])
         directory = self.directory(args.id)
         with lock(directory / ".report.lock"):
             if (record["attempt"] != item["attempt"] or
@@ -695,8 +939,11 @@ class Runtime:
                 item["verification"] = None
                 self.save()
                 raise Error("Worker changed files while stopping; review and verify again")
-            item.update(state="done", summary="Manager accepted isolated result", accepted=now())
-            atomic_json(directory / "accepted.json", {"at": item["accepted"], "verification_id": record["id"]})
+            item.update(state="done", summary="Manager accepted isolated result", accepted=now(),
+                        acceptance_eligibility="current")
+            atomic_json(directory / "accepted.json", {**self.namespace.envelope(args.id),
+                        "attempt": item["attempt"], "assignment_id": item["assignment_id"],
+                        "at": item["accepted"], "verification_id": record["id"]})
         self.save()
         self.event(args.id, "task.accepted", verification_id=record["id"])
         return item
@@ -715,9 +962,18 @@ class Runtime:
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--root", default=os.getcwd(), help="Project checkout, before the subcommand")
+    cli.add_argument("--manager-id", type=manager_id, help="Explicit manager selector, before the subcommand")
+    cli.add_argument("--owner-file", default=os.environ.get("MANAGER_OWNER_FILE"),
+                     help="Private owner credential for management writes")
     sub = cli.add_subparsers(dest="action", required=True)
-    for name in ("init", "status", "reconcile", "events"):
+    for name in ("init", "managers", "status", "reconcile", "events"):
         sub.add_parser(name)
+    p = sub.add_parser("owner")
+    owner = p.add_subparsers(dest="owner_action", required=True)
+    owner.add_parser("status")
+    p = owner.add_parser("claim")
+    p.add_argument("--session-id", required=True)
+    p.add_argument("--credential-file", required=True)
     for name in ("task", "spawn"):
         p = sub.add_parser(name)
         p.add_argument("--id", required=True, type=task_id)
@@ -741,6 +997,7 @@ def parser():
     p = sub.add_parser("report")
     p.add_argument("id", type=task_id)
     p.add_argument("--attempt", required=True, type=int)
+    p.add_argument("--assignment-id", help="Launch identity; defaults to MANAGER_WORKER_ASSIGNMENT")
     p.add_argument("--state", choices=sorted(WORKER_STATES), required=True)
     p.add_argument("--summary", required=True)
     p.add_argument("--question")
@@ -761,58 +1018,163 @@ def parser():
     return cli
 
 
-def main():
-    args = parser().parse_args()
+def list_managers(root):
+    runtime = Runtime(root, inventory=True)
+    container = runtime.namespace.container
+    entries = []
+    if container.exists():
+        for path in read_directory(container):
+            try:
+                manager_id(path.name)
+                reject_symlinks(path)
+                item = Runtime(runtime.root, path.name, inventory=True)
+                item.load()
+                entries.append({"manager_id": path.name, "version": 2,
+                                "owner": item.owner_summary(),
+                                "max_workers": config(item.root)["manager"]["max_workers"]})
+            except (Error, OSError, ValueError, argparse.ArgumentTypeError) as exc:
+                entries.append({"manager_id": path.name, "error": str(exc)})
+    result = {"root": str(runtime.root), "managers": entries, "capacity_scope": "per-manager"}
     try:
-        worker = os.environ.get("MANAGER_WORKER_TASK")
-        if worker and (args.action not in ("report", "inbox") or args.id != worker):
-            raise Error("Worker sessions can only report and read their own inbox")
-        if worker and args.action == "report" and str(args.attempt) != os.environ.get("MANAGER_WORKER_ATTEMPT"):
-            raise Error("Worker attempt does not match its launch generation")
-        if args.action == "send" and (args.message is None) == (args.message_file is None):
-            raise Error("Provide one message or --message-file")
-        if args.action == "verify" and args.timeout < 1:
-            raise Error("--timeout must be positive")
-        runtime = Runtime(args.root)
-        if args.action in ("report", "inbox"):
-            if not runtime.state_path.is_file():
-                raise Error("Run manager init first")
-            result = runtime.report(args) if args.action == "report" else runtime.inbox(args.id)
+        runtime.namespace.legacy_check()
+    except ValueError as exc:
+        result["legacy_error"] = str(exc)
+    return result
+
+
+def read_action(runtime, args):
+    runtime.load()
+    if args.action == "status":
+        saved = json.loads(json.dumps(runtime.state))
+        observed = runtime.reconcile(persist=False)
+        return {"root": str(runtime.root), "manager_id": runtime.manager_id,
+                "tasks": list(saved["tasks"].values()), "observed": observed,
+                "worker_capacity": observed["worker_capacity"], "owner": runtime.owner_summary()}
+    if args.action == "owner":
+        result = runtime.owner_summary()
+        if args.owner_file:
+            try:
+                runtime.require_owner(args.owner_file)
+                result["credential_valid"] = True
+            except (Error, OSError, ValueError):
+                result["credential_valid"] = False
+        return result
+    if args.action == "events":
+        events = []
+        for folder in read_directory(runtime.home / "events"):
+            if folder.is_dir():
+                for path in read_directory(folder):
+                    if path.suffix == ".json":
+                        event = read_json(path)
+                        if not runtime.namespace.matches(event, event.get("task_id")):
+                            raise Error("Invalid event namespace identity")
+                        events.append(event)
+        return sorted(events, key=lambda e: (e["at"], e.get("task_id") or ""))
+    if args.action == "inbox":
+        runtime.task(args.id)
+        return runtime.inbox(args.id)
+    if args.action == "peek":
+        item = runtime.task(args.id)
+        pane = runtime.panes().get(item["window"])
+        if not pane:
+            raise Error("No pane; inspect the task's preserved log.txt instead")
+        output = run(["tmux", "capture-pane", "-p", "-t", pane["id"], "-S", "-200"])
+        return {**runtime.namespace.envelope(args.id), "output": output.stdout.decode(errors="replace")}
+    raise Error("Unknown read action")
+
+
+def main():
+    global READ_FILES, READ_DIRS
+    args = parser().parse_args()
+    readonly = args.action in ("managers", "status", "peek", "events", "inbox") or (
+        args.action == "owner" and args.owner_action == "status")
+    if readonly:
+        READ_FILES, READ_DIRS = {}, {}
+    try:
+        worker_keys = ("MANAGER_WORKER_ROOT", "MANAGER_WORKER_MANAGER", "MANAGER_WORKER_TASK",
+                       "MANAGER_WORKER_ATTEMPT", "MANAGER_WORKER_ASSIGNMENT")
+        worker = any(os.environ.get(k) for k in worker_keys)
+        if worker and (not all(os.environ.get(k) for k in worker_keys) or
+                       args.action not in ("report", "inbox") or
+                       args.id != os.environ.get("MANAGER_WORKER_TASK")):
+            raise Error("Worker sessions can only report and read their own inbox with complete launch identity")
+        if args.action not in ("init", "managers") and not args.manager_id:
+            raise Error("--manager-id is required; no implicit current manager")
+        if args.action == "managers":
+            if args.manager_id:
+                raise Error("managers lists all namespaces; do not provide a selector")
+            result = list_managers(args.root)
         else:
-            if args.action == "init":
-                runtime.home.mkdir(exist_ok=True)
-            if not runtime.home.is_dir():
-                raise Error("Run manager init first")
-            with lock(runtime.home / ".lock"):
-                if args.action == "init":
+            identity = args.manager_id
+            if identity is None:
+                initial = Runtime(args.root)
+                while True:
+                    identity = generated_id()
+                    if not (initial.namespace.container / identity).exists():
+                        break
+            runtime = Runtime(args.root, identity)
+            if worker and (os.environ["MANAGER_WORKER_ROOT"] != str(runtime.root) or
+                           os.environ["MANAGER_WORKER_MANAGER"] != identity):
+                raise Error("Worker root/manager selector does not match its launch identity")
+            if args.action == "report":
+                supplied = args.assignment_id
+                launched = os.environ.get("MANAGER_WORKER_ASSIGNMENT")
+                if supplied and launched and supplied != launched:
+                    raise Error("Assignment ID conflicts with worker launch identity")
+                args.assignment_id = supplied or launched
+                if not runtime.valid_assignment_id(args.assignment_id):
+                    raise Error("report requires a valid --assignment-id from assignment.json")
+                if worker and str(args.attempt) != os.environ["MANAGER_WORKER_ATTEMPT"]:
+                    raise Error("Worker attempt does not match its launch generation")
+                runtime.load()
+                result = runtime.report(args)
+            elif args.action == "init":
+                result = runtime.init()
+                # An automatic ID collision never silently opens another working unit.
+                while not args.manager_id and not result["initialized"]:
+                    runtime = Runtime(args.root, generated_id())
                     result = runtime.init()
-                else:
+            elif readonly:
+                if worker:
                     runtime.load()
-                    if args.action in ("status", "reconcile"):
-                        result = runtime.reconcile()
-                    elif args.action == "events":
-                        result = sorted([read_json(p) for p in (runtime.home / "events").glob("*/*.json")],
-                                        key=lambda e: (e["at"], e.get("task_id") or ""))
-                    elif args.action in ("task", "spawn"):
-                        existing = args.id in runtime.state["tasks"]
-                        if existing and args.action == "task":
-                            raise Error("Task already exists")
-                        if existing and (args.title or args.brief or args.depends_on or args.base != "HEAD"):
-                            raise Error("Existing task definitions cannot be overwritten by spawn")
-                        item = runtime.task(args.id) if existing else runtime.register(args)
-                        result = item if args.action == "task" else runtime.launch(item, args.agent if args.agent != "auto" else None)
-                    elif args.action == "peek":
-                        runtime.reconcile()
-                        item = runtime.task(args.id)
-                        if not item.get("pane"):
-                            raise Error("No pane; inspect the task's preserved log.txt instead")
-                        output = run(["tmux", "capture-pane", "-p", "-t", item["pane"], "-S", "-200"])
-                        result = {"task_id": args.id, "output": output.stdout.decode(errors="replace")}
+                    assignment = runtime.assignment(args.id)
+                    if (str(assignment["attempt"]) != os.environ["MANAGER_WORKER_ATTEMPT"] or
+                            assignment["assignment_id"] != os.environ["MANAGER_WORKER_ASSIGNMENT"]):
+                        raise Error("Stale worker inbox identity")
+                result = read_action(runtime, args)
+            else:
+                if args.action == "send" and (args.message is None) == (args.message_file is None):
+                    raise Error("Provide one message or --message-file")
+                if args.action == "verify" and args.timeout < 1:
+                    raise Error("--timeout must be positive")
+                runtime.load()  # Diagnose corrupt/foreign state before opening any write lock.
+                with contextlib.ExitStack() as locks:
+                    if args.action in ("spawn", "retry"):
+                        locks.enter_context(lock(runtime.control / "maintenance.lock"))
+                    locks.enter_context(lock(runtime.home / ".lock"))
+                    runtime.load()
+                    if args.action == "owner":
+                        result = runtime.claim(args)
                     else:
-                        result = getattr(runtime, args.action)(args)
+                        runtime.require_owner(args.owner_file)
+                        if args.action == "reconcile":
+                            result = runtime.reconcile()
+                        elif args.action in ("task", "spawn"):
+                            existing = args.id in runtime.state["tasks"]
+                            if existing and args.action == "task":
+                                raise Error("Task already exists")
+                            if existing and (args.title or args.brief or args.depends_on or args.base != "HEAD"):
+                                raise Error("Existing task definitions cannot be overwritten by spawn")
+                            item = runtime.task(args.id) if existing else runtime.register(args)
+                            result = item if args.action == "task" else runtime.launch(
+                                item, args.agent if args.agent != "auto" else None)
+                        else:
+                            result = getattr(runtime, args.action)(args)
+        if readonly:
+            check_read_consistency()
         emit(result)
         return 1 if args.action == "verify" and not result["passed"] else 0
-    except (Error, OSError, ValueError) as exc:
+    except (Error, OSError, ValueError, argparse.ArgumentTypeError) as exc:
         emit({"error": str(exc)})
         return 1
 

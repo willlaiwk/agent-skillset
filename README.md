@@ -18,6 +18,7 @@ Its local runtime provides:
 
 - Persistent interactive Codex and Claude Code worker sessions in tmux.
 - A separate Git worktree for each worker.
+- Explicit manager IDs with isolated task state, worker routing, and read-only inspection.
 - Task dependencies and configurable worker concurrency limits.
 - Structured status reports, durable messages, and message acknowledgments.
 - Independent verification records and an acceptance gate that checks whether reviewed results have changed.
@@ -41,7 +42,9 @@ Include loading and error states, add relevant tests, and independently
 verify the integrated result before reporting completion.
 ```
 
-Manager runtime data is stored in `.manager/` at the managed project's Git root. Initialization adds that directory to `.gitignore`. Workers start from committed Git refs; relevant uncommitted changes must be accounted for in the task plan.
+Manager runtime data is stored in `.manager/{manager-id}/` at the managed project's Git root. Initialization uses shared Git `info/exclude` and preserves the user's `.gitignore`. Save the returned ID, explicitly claim ownership, and use that selector and private owner credential for management writes. Workers start from committed Git refs; relevant uncommitted changes must be accounted for in the task plan.
+
+The current v2 implementation is staged: manager namespaces and basic claim are available; owner handoff, dedicated integration/delivery commands, and legacy migration are still pending. V1 data is preserved and requires deliberate migration rather than implicit initialization.
 
 ## Development
 

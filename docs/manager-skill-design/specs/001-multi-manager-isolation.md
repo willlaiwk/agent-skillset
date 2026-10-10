@@ -1,14 +1,14 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Ready；MM-01 契約收斂完成，runtime 尚未實作。
-- 建立：2026-10-08；更新：2026-10-09。
-- 實作基線：`d8b0ca5`；已發布格式仍為 `.manager/state.json` v1，沒有 manager ID。
+- 狀態：Implementing；MM-02 namespace／路由已完成，MM-03 已接基本 claim，完整功能尚未完成。
+- 建立：2026-10-08；更新：2026-10-10。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。目前工作樹含 v2 namespace 實作；完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
 ## 1. 問題與目標
 
-目前兩個 Session 使用相同 `--root`，會共用 state、plan、task ID、tmux session 與 worker。CLI 的專案鎖只序列化單次操作，無法隔離兩個 manager 的規劃與指示。即使資料分開，manager 在相同主 checkout 切分支或整合也仍會互相影響。
+V1 中兩個 Session 使用相同 `--root`，會共用 state、plan、task ID、tmux session 與 worker。CLI 的專案鎖只序列化單次操作，無法隔離兩個 manager 的規劃與指示。即使資料分開，manager 在相同主 checkout 切分支或整合也仍會互相影響。
 
 本功能提供：使用者指定 ID 建立／接續 manager；未指定 ID 時建立新 manager；同專案的不同 manager 使用獨立管理資料、worker 與整合工作區；舊資料可以刻意遷移並恢復。
 
@@ -39,7 +39,7 @@ ID 規則：1–64 字元，僅小寫 ASCII 字母、數字、`-`、`_`，首字
 
 ## 4. 目標 CLI
 
-以下是 MM-02–MM-06 要提供的介面，目前 CLI 尚未支援。全域參數置於子命令前；只有 `migrate` 的目的 ID 使用子命令參數。
+以下是 MM-02–MM-06 的完整目標介面。MM-02 已提供 namespace／查閱／worker 路由命令及基本 owner status/claim；release/takeover、integration/deliver/migrate 尚未提供。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；只有目標 `migrate` 的目的 ID 使用子命令參數。
 
 ```sh
 manager --root /project init
@@ -230,7 +230,7 @@ Validated 核對 counts、task/dependency/attempt、ack 歷史、所有內容、
 
 V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一般命令對 v1 回報 migration 指引、對不支援版本明確報錯；完成 tombstone 與 pending journal 有獨立診斷。Readonly 操作不得偷偷 initialize 或修復。
 
-各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 再整體驗證。V1 仍為已發布介面，這份 Ready spec 不是現行使用手冊。Migration 前不能讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
+各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 再整體驗證。現行工作樹已提供 v2 namespace，完整功能仍在 Implementing；這份 spec 不是已支援命令的使用手冊。Migration 尚未提供，不能直接用新 CLI 接續 v1；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
 
 ## 10. 驗收情境
 
@@ -260,11 +260,12 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。以上契約足以進入 MM-02；所有 runtime 行為與 AC 仍須實作測試，不以文件定案宣稱通過驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-10 | MM-02：實作 namespace、完整 launch identity、純查閱與基本 claim 前置；補驗證證據，維持 Implementing，未完成 ownership handoff／integration／delivery／migration／真實 provider |
 | 2026-10-09 | MM-01：selector/schema、主控 API/fencing、首版本地交付 transaction、migration mapping/歷史/停止/續跑定案；狀態改 Ready，ADR-0002–0004 Accepted；無 runtime 修改 |
 | 2026-10-08 | 初稿：manager ID、namespace、主控、整合交付、v1 遷移與 AC；runtime 未實作 |

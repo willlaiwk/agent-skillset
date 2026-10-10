@@ -7,7 +7,7 @@
 
 文件入口與維護方式見 [README](README.md)；實作現況見 [progress](progress.md)，開發任務見 [tasks](tasks.md)。本文件包含尚未實作的願景，不是目前 CLI 的使用手冊；已實作介面以 [runtime reference](../../skills/manager/references/runtime.md) 為準。
 
-2026-10-09 完成 [SPEC-001：多 Manager 隔離、整合與遷移](specs/001-multi-manager-isolation.md) 的 MM-01 契約收斂（Ready，ADR-0002–0004 Accepted；未實作），涉及本文件第 7、11、18–19、23、25–26、30 節。採用持久 manager ID namespace、明確 owner generation/token 交接、各 manager 獨立整合工作樹、common-directory 短交付 gate 與 v1 遷移。首版 gate 僅支援未 checkout 本地分支 fast-forward；migration 保留歷史與舊 refs，採完整 backup/journal、資格重驗與 forward resume。原章節保留為 v1 架構基線；新功能以 SPEC-001 為行為契約，不在本文件複製細節。
+2026-10-09 完成 [SPEC-001：多 Manager 隔離、整合與遷移](specs/001-multi-manager-isolation.md) 的 MM-01 契約收斂（ADR-0002–0004 Accepted），涉及本文件第 7、11、18–19、23、25–26、30 節。採用持久 manager ID namespace、明確 owner generation/token 交接、各 manager 獨立整合工作樹、common-directory 短交付 gate 與 v1 遷移。首版 gate 僅支援未 checkout 本地分支 fast-forward；migration 保留歷史與舊 refs，採完整 backup/journal、資格重驗與 forward resume。2026-10-10 MM-02 已實作 namespace／路由與純查閱，SPEC-001 維持 Implementing；主控交接、整合／交付、migration 與真實 provider 仍待完成。原章節保留為 v1 架構基線；新功能以 SPEC-001 為行為契約，不在本文件複製細節。
 
 ---
 

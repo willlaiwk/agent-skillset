@@ -2,7 +2,9 @@
 
 ## Planning
 
-Read project instructions before `init`. Initialization creates ignored local state; it does not commit it. Write `.manager/plan.md` with the requested outcome, scope, acceptance criteria, task dependencies, delivery branch/tree, known user changes, decisions, integration progress, and final verification evidence. Use stable task IDs such as `T001`.
+Read project instructions before `init`. Save/display the returned manager ID; resume by explicit ID. Initialization creates ignored namespaced state without committing or modifying the user's `.gitignore`; it does not claim/reconcile. Claim an initially released manager with a private owner credential outside worker artifacts, then supply selector/credential on management commands. Current runtime does not yet provide release/takeover: retain the credential and never manually overwrite owner state. Read-only status/peek/inbox/events are available without control.
+
+As the valid owner, write `.manager/{ID}/plan.md` with the requested outcome, scope, acceptance criteria, task dependencies, delivery branch/tree, known user changes, decisions, integration progress, and final verification evidence. Task IDs such as `T001` are local to each manager. Worker limits also apply per manager, not repository-wide. Legacy v1 state blocks v2 commands; migration is pending, so preserve it rather than moving files or reinitializing.
 
 Create task briefs using the template. Dependencies must reference previously registered tasks, which keeps the MVP graph acyclic. `task` registers queued work; `spawn` starts work only after dependencies are manager-accepted. The manager schedules runnable tasks itself; there is no background scheduler.
 
@@ -10,19 +12,19 @@ Every worker gets a private worktree. Worktrees are created from `--base` (defau
 
 ## Supervision loop
 
-1. Run `status` or `reconcile` and read changed reports/events. Only manager state `done` counts as accepted.
+1. Run namespaced `status` and read its persisted tasks plus live `observed` diagnostics; use owner-only `reconcile` to persist report changes. Status/peek do not write state. Only manager state `done` with current acceptance eligibility counts as accepted.
 2. For `needs_manager`, inspect the question and repository evidence, then `send` an answer. If user judgment is essential, record `escalate`, ask the user, and send their answer when available.
 3. Inspect the pane only for diagnostics, including native permission/trust/login prompts. Do not auto-confirm a prompt. A persisted inbox survives failed delivery; `send --inbox-only` avoids pasting into a busy UI. Only send to the terminal when the worker is ready; `inbox` lets you inspect unacknowledged messages.
 4. For `verification`, read `result.md`, inspect the diff from the recorded base, and compare work to each acceptance criterion. Inspect commands before running project-configured checks. Save an independent review and run `verify --review ... --command ...`.
 5. On failure, `send` a focused correction to the existing session. This invalidates verification. If dead, diagnose, `retry`, and use retained result/worktree/history as context. Two restarts after the initial attempt are the default limit.
-6. `accept` requires a successful verification record bound to current worktree contents, report, attempt, and review. It stops the worker and records task acceptance. Integrate using ordinary repository tools, resolve conflicts within scope, and run combined checks in the delivery tree.
+6. `accept` requires a successful verification record bound to current worktree contents, report, attempt/assignment identity, and review. It stops the matching worker and records task acceptance. Integrate using ordinary repository tools in a separate isolated delivery/integration tree, resolve conflicts within scope, and run combined checks there. Dedicated integration/delivery CLI support remains pending; keep concurrent managers out of the shared user checkout.
 
 The runtime enforces a structural verification gate, not semantic correctness: you remain responsible for the adequacy of review and commands. For a research-only task, independently check cited evidence and use an appropriate artifact validation command rather than inventing irrelevant code tests.
 
 ## Recovery
 
-`reconcile` reads reports, inventories project-owned tmux windows and registered Git worktrees, flags stale reports (default 15 minutes), and marks missing/crashed workers or worktrees as failures. Stale means inspect, not automatically kill. It reports orphan panes/directories but does not kill or delete them. Corrupt reports produce explicit errors; they are not interpreted as success.
+`reconcile` reads only the selected manager's reports, inventories matching tmux windows and registered worktrees, flags stale reports (default 15 minutes), and marks missing/crashed workers or worktrees as failures. Full tmux root/manager metadata must match; unmarked or foreign sessions are rejected. Other managers' resources are not adopted as orphans. Stale means inspect, not automatically kill. Orphans are reported, never killed/deleted. Corrupt reports are explicit errors, never success.
 
-An interrupted launch is recovered from persisted session/window names. Reconcile can rediscover its pane. `retry` preserves the branch and worktree, increments an attempt generation, and rejects reports from old attempts. A retry begins a fresh interactive conversation with the original brief, prior result, and correction context; it does not promise provider conversation resumption after a process dies.
+An interrupted launch is recovered from namespaced session/window identity. Reconcile can rediscover its pane. `retry` preserves branch/worktree/history, increments the attempt and replaces the assignment ID; old report/inbox/ack identity is rejected. Old message acknowledgment remains historical, not current-attempt receipt. A retry begins a fresh interactive conversation with the original brief, prior result, and correction context; it does not promise provider conversation resumption after a process dies.
 
 Do not remove state, branches, logs, or worktrees during recovery. If state is corrupt or a project moved, stop and repair from preserved artifacts with appropriate authorization; do not initialize over it. The runtime does not recreate missing state automatically or claim to restore unrecorded user intent.

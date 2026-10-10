@@ -2,7 +2,7 @@
 
 ## Planning
 
-Read project instructions before `init`. Save/display the returned manager ID; resume by explicit ID. Initialization creates ignored namespaced state without committing or modifying the user's `.gitignore`; it does not claim/reconcile. Claim an initially released manager with a private owner credential outside worker artifacts, then supply selector/credential on management commands. Current runtime does not yet provide release/takeover: retain the credential and never manually overwrite owner state. Read-only status/peek/inbox/events are available without control.
+Read project instructions before `init`. Save/display the returned manager ID; resume by explicit ID. Initialization creates ignored namespaced state without committing or modifying the user's `.gitignore`; it does not claim/reconcile. Claim an initially released manager with a private owner credential outside worker artifacts, then supply selector/credential on management commands. Retain and reuse a valid credential across compaction. For a planned handoff use `owner release`; to replace an active owner, use `owner takeover --expect-generation N --reason ... --session-id ... --credential-file ...` with a fresh private file. Do not manually overwrite owner state. Both operations fence the old credential while preserving workers and files; no timeout or PID automatically transfers control. Read-only status/peek/inbox/events are available without control.
 
 As the valid owner, write `.manager/{ID}/plan.md` with the requested outcome, scope, acceptance criteria, task dependencies, delivery branch/tree, known user changes, decisions, integration progress, and final verification evidence. Task IDs such as `T001` are local to each manager. Worker limits also apply per manager, not repository-wide. Legacy v1 state blocks v2 commands; migration is pending, so preserve it rather than moving files or reinitializing.
 
@@ -22,6 +22,10 @@ Every worker gets a private worktree. Worktrees are created from `--base` (defau
 The runtime enforces a structural verification gate, not semantic correctness: you remain responsible for the adequacy of review and commands. For a research-only task, independently check cited evidence and use an appropriate artifact validation command rather than inventing irrelevant code tests.
 
 ## Recovery
+
+Use `owner status` to inspect credential validity, owner journals and pending task operations without writing. A fenced session stops management commands and direct plan/integration edits. The new owner respects operation busy: manage other tasks or inspect while a previous check runs; do not delete locks or assume takeover stops check children. Long verify submits only after owner/assignment/snapshot checks, and returns `fenced` or `snapshot_changed` without current verification eligibility when those checks fail. A successful completed verification can survive takeover, subject to the usual acceptance recheck.
+
+An owner-only `reconcile` repairs committed owner events once, diagnoses uncommitted credentials without activating them, and classifies interrupted verification only after obtaining its operation lock and checking its journal/snapshot. It never infers check success. Verify children may survive abrupt runtime death; legally quiesce them before further task edits. Pending short-operation intents need inspection rather than an assumed successful send/stop/accept.
 
 `reconcile` reads only the selected manager's reports, inventories matching tmux windows and registered worktrees, flags stale reports (default 15 minutes), and marks missing/crashed workers or worktrees as failures. Full tmux root/manager metadata must match; unmarked or foreign sessions are rejected. Other managers' resources are not adopted as orphans. Stale means inspect, not automatically kill. Orphans are reported, never killed/deleted. Corrupt reports are explicit errors, never success.
 

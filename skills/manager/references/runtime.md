@@ -1,8 +1,8 @@
-# Runtime reference (v2 namespace, MM-02)
+# Runtime reference (v2 namespace and ownership, MM-03)
 
 ## Current support
 
-The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Basic `owner claim` and credential checks are available so management commands can run under an explicit owner. Owner release/takeover, long-operation handoff, integration/delivery commands, and migration are still pending. Keep the credential file: there is currently no takeover command if it is lost. Do not use this version to migrate v1 data or claim that the complete multi-manager design is implemented.
+The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Integration/delivery commands and migration are still pending. Do not use this version to migrate v1 data or claim that the complete multi-manager design is implemented.
 
 Python 3.9+ and Git on a POSIX host are required. Starting workers additionally requires tmux and an installed, authenticated `codex` or `claude`. Default operation uses the Python standard library; YAML `.manager.yml` requires PyYAML in the same interpreter. JSON syntax in that file needs no additional dependency. Missing YAML support is an explicit error, never silently ignored.
 
@@ -35,7 +35,20 @@ IDs use 1–64 lowercase ASCII letters, digits, `_`, or `-`, starting with a let
 
 Claim writes a private 0600 credential at the caller's chosen path, outside manager artifacts and worker worktrees. The file contains root, manager ID, generation and a random token; output/events contain no raw token. An active owner cannot be claimed again, even with the same session label. `init` does not claim. Keep and reuse the same credential across compaction/session recovery; do not put it in the plan or worker prompt.
 
-Every management write requires `--owner-file` or `MANAGER_OWNER_FILE`; the explicit argument wins. Root/manager/generation/token must match the active owner. Query `owner status` with a credential to inspect `credential_valid`; the query remains read-only. Current ownership is a cooperative gate, not an OS sandbox. Release/takeover and failure-recovery refinements belong to MM-03; do not attempt a second controller for the same ID.
+Every management write requires `--owner-file` or `MANAGER_OWNER_FILE`; the explicit argument wins. Root/manager/generation/token must match the active owner. Query `owner status` with a credential to inspect `credential_valid`; the query remains read-only. Current ownership is a cooperative gate, not an OS sandbox. Claim requires a released owner. Release requires its valid credential, clears the token and increments generation. Takeover requires an active owner at the exact expected generation, a nonempty reason, a new session label and a fresh credential file; it rotates the token and increments generation. Stale timestamps/PIDs never grant takeover. Release/takeover do not stop workers, checks or providers, or undo file changes. The old session must stop direct plan/Git edits as well as CLI writes.
+
+```sh
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json owner release
+# Claim a released manager using a new credential path.
+manager --root /project --manager-id feature-login owner claim \
+  --session-id session-b --credential-file /tmp/session-b.owner.json
+# Or explicitly replace an active owner, using the generation from owner status.
+manager --root /project --manager-id feature-login owner takeover \
+  --expect-generation 3 --reason 'Explicit handoff; previous credential lost' \
+  --session-id session-c --credential-file /tmp/session-c.owner.json
+```
+
+Owner transitions journal an operation ID before committing owner state, write and sync the exclusive private credential before activation, then record the corresponding event under that ID. `owner status` exposes journal state and credential validity without repairs. If interrupted before activation, the credential stays invalid and must not be reused/overwritten; use a fresh path. If activation succeeded but event writing was interrupted, a valid owner's next management command/reconcile repairs the event exactly once. A subsequent claim/takeover also repairs prior owner journals before transferring control. Generation never resets; an uncommitted credential is diagnosed as `not_committed`, never activated by recovery.
 
 ```sh
 manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
@@ -61,7 +74,11 @@ manager --root /project --manager-id feature-login --owner-file /tmp/session-a.o
 
 All commands return JSON; errors and failed verification exit nonzero (argument syntax errors use argparse diagnostics). `task` registers without launching. `spawn` can register and launch or start a queued task; it cannot overwrite existing definitions. Dependencies must already exist and be manager-accepted, with current eligibility, before launch. Their code is not automatically transferred into the next worker's committed base. There is no automatic scheduler.
 
-Writes serialize with a per-manager POSIX lock. Initialization/shared exclude and worktree creation additionally use the common Git maintenance lock; waits are bounded. Worker reports use a separate task lock, so they can be submitted during long verification. The current verify still holds the registry lock across checks: moving those checks outside the lock with operation fencing is pending MM-03. There is no automatic expiry, takeover, or manager wakeup.
+Writes recheck the credential inside the per-manager registry lock. Short external calls have bounded timeouts and retain launch/message/stop/retry/accept intents for diagnosis. Task management uses a nonblocking `.operation.lock` before the registry lock; a busy target fails immediately. Reconcile skips busy tasks and reports `operation_busy`, while other tasks can progress. Initialization/shared exclude and worktree creation additionally use the common Git maintenance lock. Lock order is common maintenance → task operation (sorted resource paths) → registry → task report; common/registry/report waits are bounded. Read commands do not create/acquire write locks.
+
+Long verify reserves a journal/snapshot under short registry/report locks, holds only its task operation lock across checks, then reloads the latest registry for owner/generation/assignment/operation/review/Git/report/result checks. It preserves concurrent changes to other tasks. Worker reports still use only their report lock. `fenced` and `snapshot_changed` runs exit nonzero, retain logs/diagnostics, and cannot become current verification. A previously committed successful verification remains usable by a new owner after the acceptance recheck.
+
+`owner status.pending_operations` lists registry reservations; a finished fenced run may remain listed until the new owner reconciles. Locks are OS advisory locks released by close/process exit; a lock file's existence does not mean busy, and deleting it is unsafe. Reconcile classifies a pending verify only after acquiring its operation lock and checking its journal/snapshot. Interrupted runs never gain success; unknown side effects and pending accept intents remain diagnostic. Abrupt process death may leave check children running: takeover/reconcile do not prove their quiescence or kill them. Respect busy, inspect/wait or handle children through host authorization before task edits. There is no automatic expiry or manager wakeup.
 
 ## State and evidence
 
@@ -69,6 +86,7 @@ Writes serialize with a per-manager POSIX lock. Initialization/shared exclude an
 .manager/{manager-id}/
   state.json                   v2 registry and task graph
   owner.json                   controller generation and token digest
+  owner-operations/{id}.json    owner transition journals without raw tokens
   plan.md                      owner-written outcome/decisions
   events/{task-or-manager}/     namespaced durable events
   inbox/{task}/                messages bound to attempt/assignment
@@ -78,7 +96,9 @@ Writes serialize with a per-manager POSIX lock. Initialization/shared exclude an
     status.json                structured worker claim
     result.md
     log.txt
-    verification/{run}/         independent review, commands, fingerprint
+    .operation.lock             advisory task operation lock
+    verification/{run}/         operation journal, review, commands, fingerprint
+    accept-intent.json           retained acceptance side-effect intent
     accepted.json
     stopped.json
     history/attempt-{n}/        retained report/ack history after retry

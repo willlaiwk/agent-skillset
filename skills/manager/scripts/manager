@@ -126,9 +126,18 @@ def atomic_text(path, content):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def atomic_json(path, value):
@@ -136,7 +145,7 @@ def atomic_json(path, value):
 
 
 @contextlib.contextmanager
-def lock(path):
+def lock(path, nonblocking=False):
     reject_symlinks(path)
     with path.open("a") as stream:
         deadline = time.monotonic() + 5
@@ -145,7 +154,7 @@ def lock(path):
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                if time.monotonic() >= deadline:
+                if nonblocking or time.monotonic() >= deadline:
                     raise Error("Runtime busy: " + str(path))
                 time.sleep(0.05)
         try:
@@ -225,6 +234,7 @@ class Runtime:
         self.key = self.namespace.key
         self.control = self.namespace.control
         self.state = None
+        self.busy_tasks = set()
         if self.home is None:
             return
         self.state_path = self.home / "state.json"
@@ -380,10 +390,67 @@ class Runtime:
             raise Error("Invalid or fenced owner credential for this manager")
         return owner
 
-    def claim(self, args):
+    def owner_operations(self):
+        directory = reject_symlinks(self.home / "owner-operations")
+        if not directory.exists():
+            return []
+        records = []
+        for path in read_directory(directory):
+            if path.suffix != ".json":
+                continue  # Preserve an interrupted atomic-write temporary without adopting it.
+            record = read_json(path)
+            if (not self.namespace.matches(record) or record.get("id") != path.stem
+                    or not self.valid_assignment_id(record.get("id"))
+                    or record.get("action") not in ("claim", "release", "takeover")
+                    or record.get("state") not in ("pending", "committed", "not_committed")
+                    or not isinstance(record.get("owner"), dict)
+                    or not self.namespace.matches(record["owner"])
+                    or type(record["owner"].get("generation")) is not int
+                    or record["owner"]["generation"] < 1
+                    or record["owner"].get("operation_id") != record["id"]
+                    or not isinstance(record.get("event"), dict)
+                    or not self.namespace.matches(record["event"])
+                    or record["event"].get("operation_id") != record["id"]):
+                raise Error("Invalid owner operation journal; preserve and diagnose")
+            records.append(record)
+        return records
+
+    def repair_owner_events(self):
+        # Never activate an uncommitted credential. Only repair a proven owner commit.
         owner = self.owner()
-        if owner["state"] != "released":
-            raise Error("Manager already has an active owner; takeover is pending MM-03")
+        for record in self.owner_operations():
+            if record["state"] != "pending":
+                continue
+            path = self.home / "owner-operations" / (record["id"] + ".json")
+            if owner.get("operation_id") == record["id"] and owner == record["owner"]:
+                self.owner_event(record)
+                record["state"] = "committed"
+            else:
+                record["state"] = "not_committed"
+            atomic_json(path, record)
+
+    def owner_event(self, record):
+        path = self.home / "events" / "manager" / (record["id"] + ".json")
+        if path.exists():
+            if read_json(path) != record["event"]:
+                raise Error("Conflicting owner event; preserve and diagnose")
+        else:
+            atomic_json(path, record["event"])
+
+    def change_owner(self, args):
+        action = args.owner_action
+        owner = self.owner()
+        if action == "release":
+            self.require_owner(args.owner_file)
+        elif action == "claim" and owner["state"] != "released":
+            raise Error("Manager already has an active owner; use explicit takeover for handoff")
+        elif action == "takeover":
+            if owner["state"] != "active" or owner["generation"] != args.expect_generation:
+                raise Error("Takeover requires an active owner at --expect-generation")
+            if not args.reason.strip():
+                raise Error("Takeover reason must be nonempty")
+        if action == "release":
+            return self.commit_owner(owner, action)
         if not args.session_id.strip() or len(args.session_id) > 128:
             raise Error("Session ID must be nonempty and at most 128 characters")
         filename = Path(args.credential_file).expanduser()
@@ -400,23 +467,54 @@ class Runtime:
                 # Credentials in the main project outside .manager are allowed; private worker trees are not.
                 if tree != str(self.root):
                     raise Error("Keep owner credentials outside worker worktrees")
+        if filename.exists():
+            raise Error("Credential file already exists; never overwrite or reuse an uncommitted credential")
         token = secrets.token_hex(32)
         generation = owner["generation"] + 1
         credential = {**self.namespace.envelope(), "version": 1,
                       "generation": generation, "token": token}
+        proposed = {**owner, "generation": generation, "state": "active", "session_id": args.session_id,
+                    "token_sha256": hashlib.sha256(token.encode()).hexdigest(), "acquired_at": now(),
+                    "last_activity_at": now(), "released_at": None}
+        record = self.owner_intent(proposed, action, credential_file=str(filename),
+                                   reason=getattr(args, "reason", None))
         fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as stream:
             stream.write(json.dumps(credential) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-        operation = uuid.uuid4().hex
-        owner.update(generation=generation, state="active", session_id=args.session_id,
-                     token_sha256=hashlib.sha256(token.encode()).hexdigest(), acquired_at=now(),
-                     last_activity_at=now(), released_at=None, operation_id=operation)
-        atomic_json(self.home / "owner.json", owner)
-        self.event(None, "owner.claimed", generation=generation, session_id=args.session_id,
-                   operation_id=operation)
+        sync_directory(filename.parent)
+        self.publish_owner(record)
         return {**self.owner_summary(), "credential_file": str(filename)}
+
+    def owner_intent(self, proposed, action, **details):
+        identity = uuid.uuid4().hex
+        proposed["operation_id"] = identity
+        event = {**self.namespace.envelope(), "type": "owner." +
+                 {"claim": "claimed", "release": "released", "takeover": "taken_over"}[action],
+                 "at": now(), "operation_id": identity, "generation": proposed["generation"],
+                 "session_id": proposed["session_id"], **details}
+        record = {**self.namespace.envelope(), "id": identity, "action": action, "state": "pending",
+                  "owner": proposed, "event": event}
+        atomic_json(self.home / "owner-operations" / (identity + ".json"), record)
+        return record
+
+    def publish_owner(self, record):
+        atomic_json(self.home / "owner.json", record["owner"])
+        self.owner_event(record)
+        record["state"] = "committed"
+        atomic_json(self.home / "owner-operations" / (record["id"] + ".json"), record)
+
+    def commit_owner(self, owner, action):
+        proposed = {**owner, "generation": owner["generation"] + 1, "state": "released",
+                    "token_sha256": None, "released_at": now(), "last_activity_at": now()}
+        self.publish_owner(self.owner_intent(proposed, action))
+        return self.owner_summary()
+
+    def touch_owner(self, filename):
+        owner = self.require_owner(filename)
+        owner["last_activity_at"] = now()
+        atomic_json(self.home / "owner.json", owner)
 
     def register(self, args):
         if args.id in self.state["tasks"]:
@@ -444,6 +542,7 @@ class Runtime:
         if directory.exists():
             raise Error("Unregistered task artifacts exist; preserve and inspect them")
         directory.mkdir()
+        (directory / ".operation.lock").touch()
         (self.home / "inbox" / args.id).mkdir()
         (self.home / "events" / args.id).mkdir()
         atomic_text(directory / "brief.md", brief)
@@ -496,6 +595,16 @@ class Runtime:
         inventory, worktrees = self.panes(), self.worktrees()
         notices = []
         for identity, item in self.state["tasks"].items():
+            if persist and identity in self.busy_tasks:
+                notices.append({"task_id": identity, "issue": "operation_busy"})
+                continue
+            intent_path = self.directory(identity) / "accept-intent.json"
+            if intent_path.exists():
+                intent = read_json(intent_path)
+                if (self.namespace.matches(intent, identity) and intent.get("state") == "pending"
+                        and intent.get("attempt") == item["attempt"]
+                        and intent.get("assignment_id") == item["assignment_id"]):
+                    notices.append({"task_id": identity, "issue": "accept_intent_needs_diagnosis"})
             previous = (item["state"], item["summary"], item.get("report_error"))
             report = None
             try:
@@ -567,6 +676,40 @@ class Runtime:
                                     "scope": "manager"},
                 "orphan_panes": orphans, "orphan_worktrees": orphan_trees,
                 "orphan_tasks": orphan_tasks}
+
+    def recover_operations(self):
+        # Called only with the corresponding operation locks and registry lock.
+        for identity, item in self.state["tasks"].items():
+            if identity in self.busy_tasks:
+                continue
+            operation = item.get("operation")
+            if not operation or operation.get("state") != "running":
+                continue
+            if (not self.namespace.matches(operation, identity)
+                    or not self.valid_assignment_id(operation.get("id"))
+                    or operation.get("action") != "verify"):
+                raise Error("Invalid pending operation; preserve and diagnose")
+            evidence = self.directory(identity) / "verification" / operation["id"]
+            journal = read_json(evidence / "operation.json")
+            if journal.get("id") != operation["id"] or not self.namespace.matches(journal, identity):
+                raise Error("Pending verification journal mismatch; preserve and diagnose")
+            # The lock proves the old runtime released the resource, not that its
+            # children or arbitrary host writes stopped. Never infer check success.
+            diagnostic = {**journal, "state": "interrupted", "recovered_at": now(),
+                          "snapshot_matches": None, "diagnostic_error": None}
+            if journal.get("state") in ("fenced", "snapshot_changed", "failed", "passed"):
+                diagnostic["state"] = journal["state"]
+            try:
+                diagnostic["snapshot_matches"] = (
+                    self.fingerprint(item) == journal["fingerprint"] and
+                    hashlib.sha256((evidence / "review.md").read_bytes()).hexdigest() == journal["review_sha256"])
+            except (Error, OSError, KeyError, ValueError) as exc:
+                diagnostic["diagnostic_error"] = str(exc)
+            atomic_json(evidence / "operation.json", diagnostic)
+            item["operation"] = diagnostic
+            item["verification"] = None
+            self.save()
+            self.event(identity, "manager.operation_interrupted", operation_id=operation["id"])
 
     def launch(self, item, agent_override=None):
         self.reconcile()
@@ -777,6 +920,7 @@ class Runtime:
                 run(["tmux", "delete-buffer", "-b", buffer], check=False)
         elif not args.inbox_only:
             delivery_error = "Worker is not live; message retained in inbox for retry"
+        value["delivery_error"] = delivery_error
         atomic_json(path, value)
         self.event(args.id, "manager.message", message_id=identity, delivery=value["delivery"])
         return {**value, "delivery_error": delivery_error}
@@ -817,6 +961,8 @@ class Runtime:
             raise Error("Retry limit reached; diagnose and report the remaining blocker")
         if not item.get("worktree_valid"):
             raise Error("Cannot retry missing or mismatched worktree; preserve and repair first")
+        self.event(args.id, "worker.retry_intent", attempt=item["attempt"],
+                   assignment_id=item["assignment_id"])
         self.kill(item)
         directory = self.directory(args.id)
         with lock(directory / ".report.lock"):
@@ -857,62 +1003,127 @@ class Runtime:
         return digest.hexdigest()
 
     def verify(self, args):
-        self.reconcile()
-        item = self.task(args.id)
-        if (item["state"] != "verification" or item.get("worker_state") != "done"
-                or item.get("report_error")):
-            raise Error("verify requires a valid worker completion report")
-        review = Path(args.review).read_text()
-        if not review.strip():
-            raise Error("Independent manager review must not be empty")
-        commands = args.command or list(config(self.root)["verification"].values())
-        if not commands or any(not c.strip() for c in commands):
-            raise Error("Specify independent verification commands or review .manager.yml verification settings")
         directory = self.directory(args.id)
-        identity = uuid.uuid4().hex
-        evidence = directory / "verification" / identity
-        evidence.mkdir(parents=True)
-        atomic_text(evidence / "review.md", review)
-        item["verification"] = None
-        self.save()
-        before = self.fingerprint(item)
+        with lock(self.home / ".lock"):
+            self.load()
+            self.busy_tasks.update(set(self.state["tasks"]) - {args.id})
+            owner = self.require_owner(args.owner_file)
+            self.repair_owner_events()
+            self.recover_operations()
+            self.reconcile()
+            item = self.task(args.id)
+            if (item["state"] != "verification" or item.get("worker_state") != "done"
+                    or item.get("report_error")):
+                raise Error("verify requires a valid worker completion report")
+            review = Path(args.review).read_text()
+            if not review.strip():
+                raise Error("Independent manager review must not be empty")
+            commands = args.command or list(config(self.root)["verification"].values())
+            if not commands or any(not c.strip() for c in commands):
+                raise Error("Specify independent verification commands or review .manager.yml verification settings")
+            identity = uuid.uuid4().hex
+            evidence = directory / "verification" / identity
+            evidence.mkdir(parents=True)
+            atomic_text(evidence / "review.md", review)
+            with lock(directory / ".report.lock"):
+                assignment = self.assignment(args.id)
+                completion = read_json(directory / "status.json")
+                result = reject_symlinks(directory / "result.md")
+                if (not self.namespace.matches(completion, args.id)
+                        or completion.get("attempt") != item["attempt"]
+                        or completion.get("assignment_id") != item["assignment_id"]
+                        or completion.get("state") != "done"
+                        or not result.is_file() or not result.read_text().strip()):
+                    raise Error("Completion changed before verification snapshot; reconcile and retry")
+                before = self.fingerprint(item)
+            review_hash = hashlib.sha256(review.encode()).hexdigest()
+            operation = {**self.namespace.envelope(args.id), "id": identity, "action": "verify",
+                         "state": "running", "generation": owner["generation"], "pid": os.getpid(),
+                         "started_at": now(), "attempt": item["attempt"],
+                         "assignment_id": item["assignment_id"], "fingerprint": before,
+                         "review_sha256": review_hash}
+            atomic_json(evidence / "operation.json", operation)
+            item.update(verification=None, operation=operation)
+            self.save()
+            self.touch_owner(args.owner_file)
         checks = []
-        for index, command in enumerate(commands):
-            output = evidence / (str(index + 1) + ".log")
-            timed_out = False
-            with output.open("wb") as stream:
-                process = subprocess.Popen(command, shell=True, executable="/bin/sh",
-                                           cwd=item["worktree"], stdout=stream,
-                                           stderr=subprocess.STDOUT, start_new_session=True)
-                try:
-                    code = process.wait(timeout=args.timeout)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    os.killpg(process.pid, signal.SIGTERM)
+        execution_error = None
+        try:
+            for index, command in enumerate(commands):
+                output = evidence / (str(index + 1) + ".log")
+                timed_out = False
+                with output.open("wb") as stream:
+                    environment = dict(os.environ)
+                    environment.pop("MANAGER_OWNER_FILE", None)
+                    process = subprocess.Popen(command, shell=True, executable="/bin/sh",
+                                               cwd=item["worktree"], stdout=stream, env=environment,
+                                               stderr=subprocess.STDOUT, start_new_session=True)
                     try:
-                        process.wait(timeout=5)
+                        code = process.wait(timeout=args.timeout)
                     except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait()
-                    code = 124
-                except BaseException:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    raise
-            checks.append({"command": command, "exit_code": code, "timed_out": timed_out,
-                           "log": str(output.relative_to(self.home))})
-        after = self.fingerprint(item)
-        passed = before == after and all(c["exit_code"] == 0 for c in checks)
-        record = {**self.namespace.envelope(args.id), "id": identity, "at": now(),
-                  "attempt": item["attempt"], "assignment_id": item["assignment_id"], "passed": passed,
-                  "unchanged": before == after, "fingerprint": after,
-                  "review": str((evidence / "review.md").relative_to(self.home)),
-                  "review_sha256": hashlib.sha256(review.encode()).hexdigest(), "checks": checks}
-        atomic_json(evidence / "record.json", record)
-        item["verification"] = record
-        item["summary"] = "Independent verification passed" if passed else "Independent verification failed"
-        self.save()
-        self.event(args.id, "manager.verified", passed=passed, evidence=record["id"])
-        return record
+                        timed_out = True
+                        os.killpg(process.pid, signal.SIGTERM)
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                        code = 124
+                    except BaseException:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        raise
+                checks.append({"command": command, "exit_code": code, "timed_out": timed_out,
+                               "log": str(output.relative_to(self.home))})
+        except (Error, OSError, ValueError) as exc:
+            execution_error = str(exc)
+        with lock(self.home / ".lock"):
+            self.load()  # Never write the start-time registry over another task's work.
+            current = self.task(args.id)
+            fenced = False
+            try:
+                final_owner = self.require_owner(args.owner_file)
+                fenced = final_owner["generation"] != owner["generation"]
+            except (Error, OSError, ValueError):
+                fenced = True
+            diagnostic_error = execution_error
+            after = None
+            with lock(directory / ".report.lock"):
+                try:
+                    trees = self.worktrees()
+                    current["worktree_valid"] = bool(
+                        trees.get(current["worktree"], {}).get("branch") == "refs/heads/" + current["branch"]
+                        and Path(current["worktree"]).is_dir())
+                    after = self.fingerprint(current)
+                    unchanged = (before == after and self.assignment(args.id) == assignment and
+                                 current["attempt"] == operation["attempt"] and
+                                 current["assignment_id"] == operation["assignment_id"] and
+                                 (current.get("operation") or {}).get("id") == identity and
+                                 read_json(evidence / "operation.json") == operation and
+                                 hashlib.sha256((evidence / "review.md").read_bytes()).hexdigest() == review_hash)
+                except (Error, OSError, ValueError) as exc:
+                    diagnostic_error = str(exc)
+                    unchanged = False
+                passed = not fenced and unchanged and not diagnostic_error and all(c["exit_code"] == 0 for c in checks)
+                outcome = ("fenced" if fenced else "snapshot_changed" if not unchanged else
+                           "passed" if passed else "failed")
+                record = {**self.namespace.envelope(args.id), "id": identity, "at": now(),
+                          "generation": owner["generation"], "attempt": operation["attempt"],
+                          "assignment_id": operation["assignment_id"], "passed": passed,
+                          "outcome": outcome, "unchanged": unchanged, "fingerprint": after,
+                          "review": str((evidence / "review.md").relative_to(self.home)),
+                          "review_sha256": review_hash, "checks": checks, "diagnostic_error": diagnostic_error}
+                atomic_json(evidence / "record.json", record)
+                finished = {**operation, "state": outcome, "finished_at": now()}
+                atomic_json(evidence / "operation.json", finished)
+                # Fenced runs may save their diagnostic journal only, never registry eligibility.
+                if not fenced and (current.get("operation") or {}).get("id") == identity:
+                    current["operation"] = finished
+                    current["verification"] = record if unchanged else None
+                    current["summary"] = "Independent verification passed" if passed else "Independent verification failed"
+                    self.save()
+                    self.touch_owner(args.owner_file)
+                self.event(args.id, "manager.verified", passed=passed, outcome=outcome, evidence=identity)
+            return record
 
     def accept(self, args):
         self.reconcile()
@@ -934,6 +1145,10 @@ class Runtime:
                 self.save()
                 raise Error("Worktree/report/review changed since verification; verify again")
             # End the session before acceptance, then recheck for shutdown-time changes.
+            atomic_json(directory / "accept-intent.json", {**self.namespace.envelope(args.id),
+                        "state": "pending", "at": now(), "attempt": item["attempt"],
+                        "assignment_id": item["assignment_id"], "verification_id": record["id"],
+                        "fingerprint": record["fingerprint"]})
             self.kill(item)
             if record["fingerprint"] != self.fingerprint(item):
                 item["verification"] = None
@@ -946,6 +1161,8 @@ class Runtime:
                         "at": item["accepted"], "verification_id": record["id"]})
         self.save()
         self.event(args.id, "task.accepted", verification_id=record["id"])
+        intent = read_json(directory / "accept-intent.json")
+        atomic_json(directory / "accept-intent.json", {**intent, "state": "committed"})
         return item
 
     def escalate(self, args):
@@ -971,9 +1188,14 @@ def parser():
     p = sub.add_parser("owner")
     owner = p.add_subparsers(dest="owner_action", required=True)
     owner.add_parser("status")
-    p = owner.add_parser("claim")
-    p.add_argument("--session-id", required=True)
-    p.add_argument("--credential-file", required=True)
+    owner.add_parser("release")
+    for name in ("claim", "takeover"):
+        p = owner.add_parser(name)
+        p.add_argument("--session-id", required=True)
+        p.add_argument("--credential-file", required=True)
+        if name == "takeover":
+            p.add_argument("--expect-generation", type=int, required=True)
+            p.add_argument("--reason", required=True)
     for name in ("task", "spawn"):
         p = sub.add_parser(name)
         p.add_argument("--id", required=True, type=task_id)
@@ -1052,6 +1274,13 @@ def read_action(runtime, args):
                 "worker_capacity": observed["worker_capacity"], "owner": runtime.owner_summary()}
     if args.action == "owner":
         result = runtime.owner_summary()
+        result["owner_operations"] = [{"id": r["id"], "action": r["action"], "state": r["state"],
+                                       "generation": r["owner"]["generation"],
+                                       "credential_file": r["event"].get("credential_file")}
+                                      for r in runtime.owner_operations()]
+        result["pending_owner_operations"] = [r for r in result["owner_operations"] if r["state"] == "pending"]
+        result["pending_operations"] = [t["operation"] for t in runtime.state["tasks"].values()
+                                        if (t.get("operation") or {}).get("state") == "running"]
         if args.owner_file:
             try:
                 runtime.require_owner(args.owner_file)
@@ -1148,28 +1377,58 @@ def main():
                 if args.action == "verify" and args.timeout < 1:
                     raise Error("--timeout must be positive")
                 runtime.load()  # Diagnose corrupt/foreign state before opening any write lock.
+                if args.action != "owner" or args.owner_action == "release":
+                    runtime.require_owner(args.owner_file)
                 with contextlib.ExitStack() as locks:
                     if args.action in ("spawn", "retry"):
                         locks.enter_context(lock(runtime.control / "maintenance.lock"))
-                    locks.enter_context(lock(runtime.home / ".lock"))
-                    runtime.load()
-                    if args.action == "owner":
-                        result = runtime.claim(args)
+                    known_tasks = set(runtime.state["tasks"])
+                    if args.action != "owner":
+                        target = getattr(args, "id", None)
+                        for task in sorted(known_tasks):
+                            if args.action == "verify" and task != target:
+                                runtime.busy_tasks.add(task)
+                                continue
+                            try:
+                                locks.enter_context(lock(runtime.directory(task) / ".operation.lock", nonblocking=True))
+                            except Error:
+                                if task == target:
+                                    raise
+                                runtime.busy_tasks.add(task)
+                    if args.action == "verify":
+                        if args.id not in known_tasks:
+                            raise Error("Unknown task: " + args.id)
+                        result = runtime.verify(args)
                     else:
-                        runtime.require_owner(args.owner_file)
-                        if args.action == "reconcile":
-                            result = runtime.reconcile()
-                        elif args.action in ("task", "spawn"):
-                            existing = args.id in runtime.state["tasks"]
-                            if existing and args.action == "task":
-                                raise Error("Task already exists")
-                            if existing and (args.title or args.brief or args.depends_on or args.base != "HEAD"):
-                                raise Error("Existing task definitions cannot be overwritten by spawn")
-                            item = runtime.task(args.id) if existing else runtime.register(args)
-                            result = item if args.action == "task" else runtime.launch(
-                                item, args.agent if args.agent != "auto" else None)
+                        locks.enter_context(lock(runtime.home / ".lock"))
+                        runtime.load()
+                        if args.action == "owner":
+                            # Validate before journal repairs; no stale credential may write.
+                            if args.owner_action == "release":
+                                runtime.require_owner(args.owner_file)
+                            runtime.repair_owner_events()
+                            result = runtime.change_owner(args)
                         else:
-                            result = getattr(runtime, args.action)(args)
+                            runtime.require_owner(args.owner_file)
+                            runtime.repair_owner_events()
+                            runtime.busy_tasks.update(set(runtime.state["tasks"]) - known_tasks)
+                            if getattr(args, "id", None) in runtime.busy_tasks:
+                                raise Error("Task changed during lock acquisition; retry")
+                            runtime.recover_operations()
+                            if args.action == "reconcile":
+                                result = runtime.reconcile()
+                            elif args.action in ("task", "spawn"):
+                                existing = args.id in runtime.state["tasks"]
+                                if existing and args.action == "task":
+                                    raise Error("Task already exists")
+                                if existing and (args.title or args.brief or args.depends_on or args.base != "HEAD"):
+                                    raise Error("Existing task definitions cannot be overwritten by spawn")
+                                item = runtime.task(args.id) if existing else runtime.register(args)
+                                result = item if args.action == "task" else runtime.launch(
+                                    item, args.agent if args.agent != "auto" else None)
+                            else:
+                                result = getattr(runtime, args.action)(args)
+                            runtime.touch_owner(args.owner_file)
         if readonly:
             check_read_consistency()
         emit(result)

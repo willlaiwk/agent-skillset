@@ -1,6 +1,6 @@
 # ADR-0002 — 以 Manager ID 隔離工作單位
 
-- 狀態：Accepted；MM-02 namespace 已實作，MM-03 主控交接待完成。
+- 狀態：Accepted；MM-02 namespace 與 MM-03 主控交接已實作。
 - 日期：2026-10-08；定案：2026-10-09（MM-01）。
 - 關聯：[SPEC-001 §3–6](../specs/001-multi-manager-isolation.md#3-manager-身分與選擇契約)、[MM-01–MM-03](../tasks.md)、[契約檢查](../reviews/MM-01-contract-review.md)。
 
@@ -37,3 +37,5 @@ CLI、protocol、schema、測試與 migration 需同步。Owner credential 的�
 2026-10-09 依使用者開始 MM-01 的指示，完成 selector/schema 與 Q-01 契約收斂，從 Proposed 改為 Accepted。兩 Session／長 verify 的 walkthrough 記錄於契約檢查；不是 MM-02／MM-03 runtime 驗收。
 
 2026-10-10 MM-02 完成 namespace／路由／純查閱與基本 claim/credential guard，實作證據見 [MM-02 validation](../reviews/MM-02-validation.md)。Release/takeover、交接恢復與長操作 fencing 仍由 MM-03 接續；本補充不改變原決策或宣稱完整主控驗收。
+
+2026-10-10 MM-03 完成 release/takeover、owner transition journal／事件補記、task operation lock、registry 鎖外 checks 與收尾 fencing；AC-06 證據見 [MM-03 validation](../reviews/MM-03-validation.md)。Takeover 不停止 provider／checks，進程退出只釋放自身 advisory lock，接續仍需診斷殘留子進程。此補充記錄實作結果，不改變原決策；integration/delivery/migration 與真實 Agent 驗收尚未完成。

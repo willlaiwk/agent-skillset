@@ -1,8 +1,8 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Implementing；MM-02 namespace／路由已完成，MM-03 已接基本 claim，完整功能尚未完成。
+- 狀態：Implementing；MM-02 namespace／路由與 MM-03 主控交接／長操作 fencing 已完成，完整功能尚未完成。
 - 建立：2026-10-08；更新：2026-10-10。
-- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。目前工作樹含 v2 namespace 實作；完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；本輪工作樹含 MM-03。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md) 與 [MM-03 validation](../reviews/MM-03-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
@@ -126,6 +126,8 @@ V2 初始化只在 common `info/exclude` 補入 `/.manager/`（不足時），�
 | `owner takeover` | 明確 `--expect-generation`、非空 reason、新 session ID／credential-file；持 `.lock` 核對 generation 且 owner 為 active，再旋轉 token、遞增 generation並記錄交接事件。不依活動時間自動觸發 |
 | 既有 credential 接續 | root／manager／generation／token 皆相符便可沿用，包含 compaction／同主控恢復；credential 遺失則明確 takeover |
 
+Owner transition journal 存於 `owner-operations/{operation-id}.json`，不含 raw token；owner status 純讀列出 committed／pending／not_committed。管理命令在 registry 鎖內補記可證明已提交的 owner event；未提交 credential 只診斷、不啟用。
+
 Claim／takeover 的 credential-file 由呼叫端指定，存 root／manager／generation／raw token；以 0600、exclusive create 寫入，拒絕 symlink、現有檔案與 manager／worker 管理目錄內路徑。原始 token 不出現在 stdout、events、plan 或 worker prompt。先完整寫入 credential 再提交 owner；若中斷留下未生效 credential，依 `owner status` 診斷，不直接重用它或覆寫。Owner 更新與事件須可透過同一 operation ID 恢復／補記，不能只留下無法診斷的 active 狀態。
 
 不提供自動 lease expiry 或「PID 消失就接管」。失聯與長 verify／LLM 思考／compaction 無法可靠區分，takeover 是明確合作式交接。Takeover 可 fence 仍在執行的舊 Session；不殺它的 provider、不停止 Worker、不取消已產生的檔案變更。Skill 接續時顯示 pending 操作，等候其結束或由 host 合法處理，不強行刪鎖。
@@ -136,7 +138,9 @@ Claim／takeover 的 credential-file 由呼叫端指定，存 root／manager／g
 
 Skill 直接編輯 plan 或用 Git 修改 integration tree 時也必須是有效主控並遵守 operation busy；這些檔案／Git 命令仍由合作規則管制，token 不攔截任意 host 寫入。`owner status` 若帶 owner-file 可純讀核對 credential 是否有效，不輸出原始 token；交接前的檢查不能保證之後的直接 host 操作仍有效，因此新舊 Session 必須遵守交接停止指示。
 
-長 verify 分成：預留 operation／保存起始 snapshot → 鎖外執行 checks → 短鎖重新檢查與提交。Task／integration `.operation.lock` 在 checks 期間持有，防止兩個管理操作同時修改同一 worktree。開始與結束只短持 `.lock`／`.report.lock`；worker report 可持續寫入，其變化會使 snapshot 驗證失敗。
+Task 的 `.operation.lock` 在登錄時建立；既有 MM-02 task 首次管理操作可補建，查閱不建檔。Pending verify 以 task `operation` 與 `verification/{run}/operation.json` 互相核對；fenced run 的 journal 收尾後，由新 owner 取得 operation lock 再 reconcile 清除 registry reservation。Reconcile 跳過 busy task 並回報 operation_busy。
+
+長 verify 分成：預留 operation／保存起始 snapshot → 鎖外執行 checks → 短鎖重新檢查與提交。Task／integration `.operation.lock` 在 checks 期間持有，防止兩個管理操作同時修改同一 worktree。起始 snapshot 在 `.report.lock` 內重查完成報告／result，避免初次 reconcile 與 snapshot 之間的 completion 競態。開始與結束只短持 `.lock`／`.report.lock`；worker report 可持續寫入，其變化會使 snapshot 驗證失敗。
 
 收尾重讀最新 registry，只更新該 operation 的欄位，不把開始時的整份 state 寫回。核對 owner generation/token、task attempt／assignment、report/result/review、HEAD/index/working tree 與 operation ID。Owner 已交接或 snapshot 改變時回傳 `fenced`／`snapshot_changed`，保留該 run 的診斷，但不能設定 current verification、acceptance 或 delivery 資格。新 owner 的同 task 寫入因 operation busy 立即失敗，可查閱或管理其他 task；report 不拿 operation lock。Takeover 後未改動的既有成功 verification 可由新 owner重新核對後使用；尚在跑的舊 owner verification 不可提交成功。
 
@@ -146,7 +150,7 @@ Common control 目錄固定為 `<canonical-git-common-dir>/manager-runtime/`。�
 
 長 verify 持 operation lock，不持 common／registry／report 鎖。Owner 交接只拿 registry 鎖；report 只拿 report 鎖；read commands 不拿會建立檔案的鎖。初始化與共享 exclude 更新短持 maintenance；migration 持 maintenance 保護來源與 Git registration，其他 root 的 metadata 寫入暫時回 busy。交付持 maintenance 及 delivery 只涵蓋 final checks／ref transaction／收據。
 
-鎖使用 OS advisory lock，正常／例外／進程退出由 close 釋放；不能用鎖檔存在判定仍被持有，也不能刪鎖檔解鎖。Pending operation 的 PID 可作診斷；僅在取得 operation lock、核對 journal／snapshot 後分類中斷，未知 side effect 保留為需診斷，不猜測成功。
+鎖使用 OS advisory lock，正常／例外／進程退出由 close 釋放；不能用鎖檔存在判定仍被持有，也不能刪鎖檔解鎖。Pending operation 的 PID 可作診斷；僅在取得 operation lock、核對 journal／snapshot 後分類中斷，未知 side effect 保留為需診斷，不猜測成功。Runtime 被強制終止時 checks 子進程可能仍執行；取得 operation lock 不代表它們已 quiesced，接續主控須等待或依 host 授權處理它們後再改 task。
 
 ## 7. 各自整合，共用交付
 
@@ -260,12 +264,13 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-10 | MM-03：owner release/takeover、交接 journal／事件恢復、operation lock、鎖外 verify／generation fencing 與 AC-06 驗證完成；SPEC 維持 Implementing，MM-04–MM-08 與真實 Agent 驗證待後續 |
 | 2026-10-10 | MM-02：實作 namespace、完整 launch identity、純查閱與基本 claim 前置；補驗證證據，維持 Implementing，未完成 ownership handoff／integration／delivery／migration／真實 provider |
 | 2026-10-09 | MM-01：selector/schema、主控 API/fencing、首版本地交付 transaction、migration mapping/歷史/停止/續跑定案；狀態改 Ready，ADR-0002–0004 Accepted；無 runtime 修改 |
 | 2026-10-08 | 初稿：manager ID、namespace、主控、整合交付、v1 遷移與 AC；runtime 未實作 |

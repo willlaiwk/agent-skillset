@@ -4,7 +4,10 @@
 Default: deterministic fake tmux. MANAGER_TEST_REAL_TMUX=1: real isolated tmux
 server with the same fake providers, exercising interactive lifecycle and paste.
 """
+import argparse
 import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
 from pathlib import Path
@@ -13,7 +16,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 CLI = Path(__file__).resolve().with_name("manager")
 REAL_TMUX = shutil.which("tmux")
@@ -657,6 +662,330 @@ class ManagerTests(unittest.TestCase):
         self.call("init", manager="unsafe-exclude", owner=False, ok=False)
         self.assertFalse((self.root / ".manager/unsafe-exclude").exists())
         self.assertEqual(outside_exclude.read_bytes(), exclude_before)
+
+    def takeover(self, generation=None, reason="Explicit fixture handoff"):
+        if generation is None:
+            generation = self.call("owner", "status")["generation"]
+        credential = self.directory / ("takeover-" + str(generation) + ".json")
+        result = self.call("owner", "takeover", "--expect-generation", str(generation),
+                           "--reason", reason, "--session-id", "successor",
+                           "--credential-file", str(credential), owner=False)
+        self.credentials["alpha"] = credential
+        return result
+
+    def start_verify(self):
+        started, finish = self.directory / "started", self.directory / "finish"
+        code = ("from pathlib import Path; import time, os; "
+                "assert 'MANAGER_OWNER_FILE' not in os.environ; "
+                "Path(" + repr(str(started)) + ").write_text('ready'); "
+                "deadline=time.monotonic()+15\n"
+                "while not Path(" + repr(str(finish)) + ").exists():\n"
+                " assert time.monotonic()<deadline; time.sleep(.02)\n")
+        command = shlex.join([sys.executable, "-c", code])
+        process = subprocess.Popen([sys.executable, str(CLI), "--root", str(self.root),
+                                   "--manager-id", "alpha", "--owner-file", str(self.credentials["alpha"]),
+                                   "verify", "T001", "--review", str(self.review), "--command", command],
+                                  env=dict(self.env, MANAGER_OWNER_FILE=str(self.credentials["alpha"])),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        def cleanup():
+            finish.touch()
+            if process.poll() is None:
+                process.communicate(timeout=20)
+        self.addCleanup(cleanup)
+        deadline = time.monotonic() + 8
+        while not started.exists():
+            self.assertIsNone(process.poll(), "Verification exited before entering checks")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.02)
+        return process, finish
+
+    def finish_verify(self, process, finish, passed):
+        finish.touch()
+        output, error = process.communicate(timeout=10)
+        value = json.loads(output)
+        self.assertEqual(process.returncode, 0 if passed else 1, (value, error))
+        return value
+
+    def runtime_module(self):
+        sys.path.insert(0, str(CLI.parent))
+        self.addCleanup(lambda: sys.path.remove(str(CLI.parent)))
+        spec = importlib.util.spec_from_loader("manager_fixture", SourceFileLoader("manager_fixture", str(CLI)))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_owner_claim_race_release_and_no_automatic_expiry(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.call("init", manager="race", owner=False)
+        def claim(index):
+            return subprocess.run([sys.executable, str(CLI), "--root", str(self.root), "--manager-id", "race",
+                                   "owner", "claim", "--session-id", "same-session", "--credential-file",
+                                   str(self.directory / ("race-" + str(index) + ".json"))],
+                                  env=self.env, capture_output=True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(claim, range(2)))
+        self.assertEqual(sorted(r.returncode for r in results), [0, 1])
+        self.assertEqual(len(list(self.directory.glob("race-*.json"))), 1)
+        self.spawn()
+        owner_path = self.home / "owner.json"
+        owner = json.loads(owner_path.read_text())
+        owner["last_activity_at"] = "2000-01-01T00:00:00+00:00"
+        owner_path.write_text(json.dumps(owner))
+        self.call("owner", "claim", "--session-id", "new", "--credential-file", str(self.directory / "new.json"), ok=False)
+        released = self.call("owner", "release")
+        self.assertEqual((released["generation"], released["state"]), (2, "released"))
+        self.assertTrue(self.call("status")["observed"]["tasks"][0]["alive"])
+        before = self.snapshot(self.home)
+        self.call("send", "T001", "fenced", ok=False)
+        self.assertEqual(self.snapshot(self.home), before)
+        new = self.directory / "reclaimed.json"
+        self.call("owner", "claim", "--session-id", "again", "--credential-file", str(new), owner=False)
+        self.credentials["alpha"] = new
+        self.assertEqual(self.call("owner", "status")["generation"], 3)
+        self.call("send", "T001", "continued", "--inbox-only")
+
+    def test_takeover_checks_generation_and_fences_every_old_write(self):
+        self.spawn()
+        original = self.credentials["alpha"]
+        before = self.snapshot(self.home)
+        for generation, reason in ((0, "wrong generation"), (1, " ")):
+            self.call("owner", "takeover", "--expect-generation", str(generation), "--reason", reason,
+                      "--session-id", "new", "--credential-file", str(self.directory / "bad.json"), owner=False, ok=False)
+        self.assertEqual(self.snapshot(self.home), before)
+        result = self.takeover()
+        self.assertEqual(result["generation"], 2)
+        token = json.loads(self.credentials["alpha"].read_text())["token"]
+        self.assertNotIn(token, json.dumps(result))
+        self.assertNotIn(token, json.dumps(self.call("events")))
+        self.credentials["alpha"] = original
+        before_state = (self.home / "state.json").read_bytes()
+        for args in [("task", "--id", "T002", "--title", "X", "--brief", str(self.brief)),
+                     ("spawn", "--id", "T001"), ("send", "T001", "old"), ("stop", "T001"),
+                     ("retry", "T001"), ("reconcile",), ("escalate", "T001", "--reason", "old"),
+                     ("verify", "T001", "--review", str(self.review), "--command", "true"),
+                     ("accept", "T001"), ("owner", "release")]:
+            self.call(*args, ok=False)
+        self.assertEqual((self.home / "state.json").read_bytes(), before_state)
+        self.assertFalse(self.call("owner", "status")["credential_valid"])
+        self.call("report", "T001", "--attempt", "1", "--state", "working", "--summary", "worker unchanged")
+
+    def test_takeover_race_only_one_expected_generation_wins(self):
+        from concurrent.futures import ThreadPoolExecutor
+        def take(index):
+            return subprocess.run([sys.executable, str(CLI), "--root", str(self.root), "--manager-id", "alpha",
+                                   "owner", "takeover", "--expect-generation", "1", "--reason", "competing handoff",
+                                   "--session-id", "successor", "--credential-file",
+                                   str(self.directory / ("successor-" + str(index) + ".json"))], env=self.env, capture_output=True)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(take, range(2)))
+        self.assertEqual(sorted(r.returncode for r in results), [0, 1])
+        self.assertEqual(self.call("owner", "status", owner=False)["generation"], 2)
+
+    def test_owner_credentials_reject_existing_symlink_and_artifact_paths(self):
+        self.spawn()
+        for path in (self.credentials["alpha"], self.home / "private.json",
+                     Path(self.state()["worktree"]) / "private.json"):
+            self.call("owner", "takeover", "--expect-generation", "1", "--reason", "test", "--session-id", "next",
+                      "--credential-file", str(path), owner=False, ok=False)
+        linked = self.directory / "linked.json"
+        linked.symlink_to(self.credentials["alpha"])
+        self.call("owner", "takeover", "--expect-generation", "1", "--reason", "test", "--session-id", "next",
+                  "--credential-file", str(linked), owner=False, ok=False)
+        self.assertEqual(self.call("owner", "status")["generation"], 1)
+
+    def test_uncommitted_credential_is_diagnosed_without_activation(self):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        filename = self.directory / "interrupted-owner.json"
+        original = module.atomic_json
+        def fail_owner(path, value):
+            if path.name == "owner.json":
+                raise OSError("fixture crash before owner commit")
+            original(path, value)
+        args = argparse.Namespace(owner_action="takeover", expect_generation=1, reason="test",
+                                  session_id="next", credential_file=str(filename))
+        with mock.patch.object(module, "atomic_json", side_effect=fail_owner):
+            with self.assertRaises(OSError):
+                runtime.change_owner(args)
+        self.assertTrue(filename.exists())
+        before = self.snapshot(self.home)
+        status = self.call("owner", "status", owner=False, env=dict(self.env, MANAGER_OWNER_FILE=str(filename)))
+        self.assertFalse(status["credential_valid"])
+        self.assertEqual(status["generation"], 1)
+        self.assertEqual(len(status["pending_owner_operations"]), 1)
+        self.assertEqual(self.snapshot(self.home), before)
+        self.call("reconcile")
+        self.assertEqual(self.call("owner", "status")["pending_owner_operations"], [])
+        self.assertEqual(self.call("owner", "status")["generation"], 1)
+        self.call("owner", "takeover", "--expect-generation", "1", "--reason", "retry", "--session-id", "next",
+                  "--credential-file", str(filename), owner=False, ok=False)
+        self.takeover()
+
+    def test_committed_owner_event_is_repaired_once(self):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        filename = self.directory / "committed-owner.json"
+        args = argparse.Namespace(owner_action="takeover", expect_generation=1, reason="test",
+                                  session_id="next", credential_file=str(filename))
+        with mock.patch.object(runtime, "owner_event", side_effect=OSError("fixture crash after commit")):
+            with self.assertRaises(OSError):
+                runtime.change_owner(args)
+        self.credentials["alpha"] = filename
+        status = self.call("owner", "status")
+        self.assertTrue(status["credential_valid"])
+        self.assertEqual(len(status["pending_owner_operations"]), 1)
+        self.call("reconcile")
+        self.call("reconcile")
+        events = [e for e in self.call("events") if e["type"] == "owner.taken_over"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["operation_id"], status["operation_id"])
+        self.assertEqual(self.call("owner", "status")["pending_owner_operations"], [])
+
+    def test_claim_interruption_before_credential_preserves_released_owner(self):
+        self.call("init", manager="fresh", owner=False)
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "fresh")
+        runtime.load()
+        filename = self.directory / "missing-credential.json"
+        args = argparse.Namespace(owner_action="claim", session_id="fresh", credential_file=str(filename))
+        original_open = module.os.open
+        def fail_credential(path, *args, **kwargs):
+            if Path(path).resolve() == filename.resolve():
+                raise OSError("fixture failure before credential write")
+            return original_open(path, *args, **kwargs)
+        with mock.patch.object(module.os, "open", side_effect=fail_credential):
+            with self.assertRaises(OSError):
+                runtime.change_owner(args)
+        self.assertFalse(filename.exists())
+        self.assertEqual(self.call("owner", "status", manager="fresh", owner=False)["generation"], 0)
+        self.call("owner", "claim", "--session-id", "retry", "--credential-file", str(filename), manager="fresh", owner=False)
+        status = self.call("owner", "status", manager="fresh", owner=False)
+        self.assertEqual(status["generation"], 1)
+        self.assertEqual(sorted(r["state"] for r in status["owner_operations"]), ["committed", "not_committed"])
+
+    def test_release_interruption_repairs_event_before_next_claim(self):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        args = argparse.Namespace(owner_action="release", owner_file=str(self.credentials["alpha"]))
+        with mock.patch.object(runtime, "owner_event", side_effect=OSError("fixture crash after release")):
+            with self.assertRaises(OSError):
+                runtime.change_owner(args)
+        status = self.call("owner", "status")
+        self.assertEqual((status["generation"], status["state"], status["credential_valid"]), (2, "released", False))
+        filename = self.directory / "after-release.json"
+        self.call("owner", "claim", "--session-id", "next", "--credential-file", str(filename), owner=False)
+        events = [e for e in self.call("events", owner=False) if e["type"] == "owner.released"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["operation_id"], status["operation_id"])
+
+    def test_long_verify_allows_takeover_reports_and_other_tasks_but_fences_finish(self):
+        self.spawn()
+        self.worker_done()
+        process, finish = self.start_verify()
+        status = self.call("owner", "status")
+        self.assertEqual(len(status["pending_operations"]), 1)
+        self.assertIn("busy", self.call("send", "T001", "blocked", ok=False)["error"].lower())
+        started = time.monotonic()
+        self.takeover()
+        self.assertLess(time.monotonic() - started, 3)
+        self.call("report", "T001", "--attempt", "1", "--state", "done", "--summary", "still reporting")
+        self.call("task", "--id", "T002", "--title", "parallel", "--brief", str(self.brief))
+        self.call("reconcile")
+        self.assertIn("busy", self.call("accept", "T001", ok=False)["error"].lower())
+        record = self.finish_verify(process, finish, passed=False)
+        self.assertEqual(record["outcome"], "fenced")
+        state = json.loads((self.home / "state.json").read_text())
+        self.assertIn("T002", state["tasks"])
+        self.assertIsNone(state["tasks"]["T001"]["verification"])
+        self.call("reconcile")
+        self.assertEqual(self.call("owner", "status")["pending_operations"], [])
+        self.verify()
+        self.call("accept", "T001")
+
+    def test_long_verify_merges_latest_registry_and_blocks_same_task(self):
+        self.spawn()
+        self.worker_done()
+        process, finish = self.start_verify()
+        for args in [("stop", "T001"), ("retry", "T001"), ("spawn", "--id", "T001"),
+                     ("verify", "T001", "--review", str(self.review), "--command", "true")]:
+            self.assertIn("busy", self.call(*args, ok=False)["error"].lower())
+        self.call("task", "--id", "T002", "--title", "parallel", "--brief", str(self.brief))
+        record = self.finish_verify(process, finish, passed=True)
+        self.assertEqual(record["outcome"], "passed")
+        self.assertIn("T002", json.loads((self.home / "state.json").read_text())["tasks"])
+        self.call("accept", "T001")
+
+    def test_report_or_review_changes_during_long_verify_invalidate_run(self):
+        self.spawn()
+        self.worker_done()
+        for mutation in ("report", "review"):
+            for name in ("started", "finish"):
+                (self.directory / name).unlink(missing_ok=True)
+            process, finish = self.start_verify()
+            if mutation == "report":
+                self.call("report", "T001", "--attempt", "1", "--state", "done", "--summary", "updated completion")
+            else:
+                operation = self.call("owner", "status")["pending_operations"][0]
+                (self.home / "tasks/T001/verification" / operation["id"] / "review.md").write_text("Changed review")
+            record = self.finish_verify(process, finish, passed=False)
+            self.assertEqual(record["outcome"], "snapshot_changed")
+            self.assertIsNone(json.loads((self.home / "state.json").read_text())["tasks"]["T001"]["verification"])
+
+    def test_completion_change_before_start_snapshot_cannot_pass(self):
+        self.spawn()
+        self.worker_done()
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        original = runtime.reconcile
+        def completion_changes():
+            observed = original()
+            self.call("report", "T001", "--attempt", "1", "--state", "working", "--summary", "new work")
+            return observed
+        args = argparse.Namespace(id="T001", owner_file=str(self.credentials["alpha"]),
+                                  review=str(self.review), command=["true"], timeout=10)
+        with mock.patch.dict(os.environ, self.env, clear=True), module.lock(
+                self.home / "tasks/T001/.operation.lock", nonblocking=True):
+            with mock.patch.object(runtime, "reconcile", side_effect=completion_changes):
+                with self.assertRaisesRegex(module.Error, "Completion changed"):
+                    runtime.verify(args)
+        self.assertIsNone(json.loads((self.home / "state.json").read_text())["tasks"]["T001"]["verification"])
+
+    def test_release_during_verify_fences_run_and_preserves_worker(self):
+        self.spawn()
+        self.worker_done()
+        process, finish = self.start_verify()
+        self.call("owner", "release")
+        record = self.finish_verify(process, finish, passed=False)
+        self.assertEqual(record["outcome"], "fenced")
+        self.assertTrue(self.call("status", owner=False)["observed"]["tasks"][0]["alive"])
+
+    def test_successful_verification_can_be_accepted_after_takeover(self):
+        self.spawn()
+        self.worker_done()
+        record = self.verify()
+        self.takeover()
+        accepted = self.call("accept", "T001")
+        self.assertEqual(accepted["verification"]["id"], record["id"])
+        self.assertEqual(accepted["acceptance_eligibility"], "current")
+
+    def test_interrupted_verify_releases_lock_without_granting_success(self):
+        self.spawn()
+        self.worker_done()
+        process, finish = self.start_verify()
+        process.kill()
+        process.communicate(timeout=5)
+        finish.touch()  # Quiesce the fixture check child separately; takeover never kills it.
+        self.takeover()
+        state = self.call("reconcile")["tasks"][0]
+        self.assertEqual(state["operation"]["state"], "interrupted")
+        self.assertTrue(state["operation"]["snapshot_matches"])
+        self.assertIsNone(state["verification"])
+        self.call("accept", "T001", ok=False)
+        self.verify()
 
     @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
     def test_real_interactive_worker_receives_message(self):

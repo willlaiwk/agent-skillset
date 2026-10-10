@@ -1,18 +1,28 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-10。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 實作提交以 `feat: isolate manager namespaces and worker routing` 識別；commit hash 依實際 Git log 確認。
+最後更新：2026-10-10。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 實作提交：`385e331`。MM-03 本輪完成於工作樹；是否提交以實際 Git status/log 為準。
 
-**目前狀態：MM-02 namespace／worker 路由完成，預設／真實 tmux 行為驗證通過；SPEC-001 為 Implementing。MM-03 已有基本 claim/credential guard，下一步完成 release/takeover、長操作交接與 fencing。真實 Agent smoke test 仍未驗證。**
+**目前狀態：MM-02 namespace／worker 路由與 MM-03 主控釋放／接管、交接恢復及長 verify fencing 完成，預設／真實 tmux 測試通過；SPEC-001 為 Implementing。下一步 MM-04 獨立整合；真實 Agent smoke test 仍待後續完成。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 接續 **MM-03**：先讀 [SPEC-001 §6](specs/001-multi-manager-isolation.md#6-同-id-的主控與鎖)、ADR-0002 與 [MM-02 validation](reviews/MM-02-validation.md)。保留已完成 namespace/claim；實作 release/takeover、credential/owner 交接中斷恢復、operation lock、長 verify 鎖外 checks/收尾 generation fencing 及 AC-06。不要再以 registry 大鎖阻擋整段 checks。原 **MVP-02/MM-08** 真實 provider 缺口保留。
+4. 接續 **MM-04**：先讀 [SPEC-001 §7.1](specs/001-multi-manager-isolation.md#71-manager-整合工作區)、ADR-0003 與 [MM-03 validation](reviews/MM-03-validation.md)。建立每 manager 的 integration branch/worktree、combined evidence 與 source acceptance 核對；長 checks 沿用 MM-03 operation lock／registry 鎖外執行／收尾 fencing，交付 gate 留 MM-05。原 **MVP-02/MM-08** 真實 provider 缺口保留。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-10：MM-03 完成與下一步
+
+- 完成 explicit owner release/takeover、expected generation／reason gate、generation/token fencing、private credential exclusive create／fsync、owner transition journal 與同 operation ID 的事件恢復。不依時間／PID 自動接管；workers／provider／checks 保留。
+- 長 verify 預留 operation／snapshot，僅持 task operation lock 跑 checks；起始／收尾短持 registry/report 鎖，完成報告在起始 snapshot 內重查。收尾重載最新 registry，只更新所屬操作；fenced／snapshot_changed 不取得 current verification 資格。Checks 環境清除 owner credential 變數。
+- Task management 的 operation lock nonblocking；busy target 立即拒絕，reconcile 跳過 busy task，其他 task／worker report 可繼續。中斷 verify 只在取得 operation lock、核對 journal/snapshot 後診斷，不推論成功；殘留 checks 子進程須另外依法處理，不刪鎖解鎖。補 short-operation intent／delivery error 診斷。
+- 證據：[MM-03 validation](reviews/MM-03-validation.md)。最終預設 50 項：49 通過、1 real-only 跳過（63.668s）；真實 tmux 50 項全通過（84.650s）。最後的 task inventory busy 修正另以 3 項重點回歸通過（4.102s）；YAML 設定補驗 1 項通過（1.361s），skill 格式通過。
+- 同步 SKILL／manager protocol／runtime reference／README 與設計入口、spec、ADR、task、progress。Python 語法、19 份 Markdown 的 100 個本地 links／anchors 與 fences、runtime 可執行權限及 git diff --check 通過。
+- 真實 tmux 初次沙箱探測無法建立 socket，依既有主機許可使用專用暫存 server 通過；只有假的互動式 Worker，沒有模型/API。真實 Agent smoke test／MM-08／MVP-02 仍未驗證。
+- 下一步 MM-04；MM-04–MM-08 未開始，legacy migration／內建交付尚未提供。本輪不修改使用者真實 runtime 資料，Git 提交狀態以實際 status/log 為準。
 
 ## 2026-10-10：MM-02 完成與下一步
 
@@ -47,14 +57,14 @@
 | 範圍 | 當前能力 |
 | --- | --- |
 | Skill 行為 | Manager 擁有 outcome，規劃、派工、監督、回答問題、review、獨立驗證與整合 |
-| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers` 與 `owner status/claim` |
+| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers` 與 `owner status/claim/release/takeover` |
 | Agent adapters | Codex／Claude Code 互動式 CLI；`auto` 偵測、明確指定 provider、基本角色設定 |
 | 隔離 | 每個 Worker 使用獨立 tmux window 與 Git worktree；預設從已提交的 `HEAD` 建立，可指定 `--base` |
 | 任務依賴 | 可登錄依賴；只允許依賴已被 Manager 接受的任務啟動；尚無自動排程 |
 | 並行限制 | 每 manager 預設最多 4 個 Worker；不同 manager 可合計超過 4，由 Manager 決定何時啟動 |
 | 通訊 | Durable inbox、tmux paste、Worker `--ack`；傳送成功與收到確認分開紀錄 |
 | 持久化 | `.manager/{id}/state.json`／owner、task briefs／reports／results、namespaced events/inbox/logs/驗證紀錄及 retry ack 歷史 |
-| 查閱／主控 | status/peek/events/inbox/managers/owner status 零管理資料寫入；basic owner claim 與 credential guard；完整主控交接待 MM-03 |
+| 查閱／主控 | status/peek/events/inbox/managers/owner status 零管理資料寫入；claim/release/takeover、credential guard／generation fencing 與交接恢復 |
 | 驗收 | Worker `done` 先進入 Manager `verification`；`verify` 需 review 與檢查指令，`accept` 再確認證據及成果未變動 |
 | 恢復 | 偵測中斷／stale／orphan；保留成果；`retry` 沿用 worktree、遞增 attempt，拒絕舊 attempt 回報；預設最多 2 次 restart |
 | 設定 | `.manager.yml`；預設流程只使用 Python 標準函式庫，YAML 語法需 PyYAML，JSON 語法不需額外依賴 |

@@ -5,6 +5,7 @@ Default: deterministic fake tmux. MANAGER_TEST_REAL_TMUX=1: real isolated tmux
 server with the same fake providers, exercising interactive lifecycle and paste.
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -1410,6 +1411,356 @@ class ManagerTests(unittest.TestCase):
         self.combined_verify()
         self.assertTrue(self.call("integration", "status")["eligible"])
         self.assertFalse(self.call("integration", "status", "--verification", identity)["eligible"])
+
+    def delivery_runtime(self, proof):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        args = argparse.Namespace(owner_file=str(self.credentials["alpha"]), verification=proof["id"])
+        return module, runtime, args
+
+    def test_delivery_fast_forward_receipt_and_idempotence_after_advancement(self):
+        (self.root / "base.txt").write_text("user dirty checkout\n")
+        (self.root / "user.txt").write_text("untracked\n")
+        source, integration = self.integration_fixture(dirty=True)
+        proof = self.combined_verify()
+        original = self.snapshot(Path(source["worktree"]))
+        main = self.git("rev-parse", "HEAD")
+        result = self.call("deliver", "--verification", proof["id"])
+        self.assertEqual(result["state"], "committed")
+        for ref in (result["target"], result["receipt_ref"]):
+            self.assertEqual(self.git("rev-parse", ref), result["new_oid"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), main)
+        self.assertEqual((self.root / "base.txt").read_text(), "user dirty checkout\n")
+        self.assertEqual((self.root / "user.txt").read_text(), "untracked\n")
+        self.assertEqual(original, self.snapshot(Path(source["worktree"])))
+        tree = Path(integration["worktree"])
+        (tree / "later.txt").write_text("later\n")
+        self.git("add", "later.txt", root=tree)
+        self.git("commit", "-qm", "Later advancement", root=tree)
+        later = self.git("rev-parse", "HEAD", root=tree)
+        self.git("update-ref", result["target"], later, result["new_oid"])
+        self.assertEqual(self.call("deliver", "--verification", proof["id"]), result)
+        self.assertEqual(self.git("rev-parse", result["target"]), later)
+        self.assertEqual(self.call("reconcile")["deliveries"][0], result)
+        module = self.runtime_module()
+        control = module.Runtime(self.root, "alpha").control
+        before = self.snapshot(control), self.snapshot(self.home)
+        for action in (("status",), ("owner", "status"), ("integration", "status")):
+            self.call(*action, owner=False)
+        self.assertEqual(before, (self.snapshot(control), self.snapshot(self.home)))
+
+    def test_delivery_rejects_main_linked_missing_and_locked_checkouts(self):
+        self.integration_fixture()
+        proof = self.combined_verify(target="refs/heads/" + self.git("branch", "--show-current"))
+        self.assertIn("checked out", self.call("deliver", "--verification", proof["id"], ok=False)["error"])
+        proof = self.combined_verify()
+        tree = self.directory / "registered-release"
+        self.git("worktree", "add", str(tree), "release-alpha")
+        for state in ("present", "locked", "missing"):
+            if state == "locked":
+                self.git("worktree", "lock", "--reason", "Fixture retention", str(tree))
+            if state == "missing":
+                tree.rename(self.directory / "saved-release")
+            self.assertIn("checked out", self.call("deliver", "--verification", proof["id"], ok=False)["error"])
+        self.git("worktree", "unlock", str(tree))
+        self.assertIn("checked out", self.call("deliver", "--verification", proof["id"], ok=False)["error"])
+        self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+        self.assertFalse((self.root / ".git" / "manager-runtime" / "deliveries").exists())
+
+    def test_delivery_stale_foreign_invalid_and_worker_evidence_is_rejected(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        self.git("update-ref", "refs/heads/release-alpha", proof["snapshot"]["candidate"]["oid"])
+        self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertFalse((self.root / ".git" / "manager-runtime" / "delivery.lock").exists())
+        self.create_manager("beta")
+        self.call("deliver", "--verification", proof["id"], manager="beta", ok=False)
+        self.call("deliver", "--verification", "../../outside", ok=False)
+        self.call("deliver", "--verification", proof["id"], owner=False, ok=False)
+        self.call("deliver", "--verification", proof["id"], env=self.worker_env("alpha", "T001"), ok=False)
+
+    def test_delivery_final_gate_rechecks_candidate_source_review_record_and_acceptance(self):
+        source, integration = self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        original_gate = runtime.delivery_gate
+        paths = [Path(integration["worktree"]) / "base.txt", Path(source["worktree"]) / "base.txt",
+                 self.home / proof["review"], self.home / "integration-verification" / proof["id"] / "record.json",
+                 self.home / "tasks" / "T001" / "accepted.json"]
+        for path in paths:
+            original = path.read_bytes()
+            @contextlib.contextmanager
+            def changed_gate(call_args):
+                with original_gate(call_args):
+                    path.write_bytes(original + b"changed\n")
+                    yield
+            try:
+                with mock.patch.object(runtime, "delivery_gate", changed_gate):
+                    with self.assertRaises((module.Error, ValueError)):
+                        runtime.deliver(args)
+            finally:
+                path.write_bytes(original)
+            self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+        self.call("deliver", "--verification", proof["id"])
+
+    def test_delivery_handoff_between_preflight_and_gate_fences_old_owner(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        original_gate = runtime.delivery_gate
+        @contextlib.contextmanager
+        def changed_gate(call_args):
+            self.takeover()
+            with original_gate(call_args):
+                yield
+        with mock.patch.object(runtime, "delivery_gate", changed_gate):
+            with self.assertRaises(module.Error):
+                runtime.deliver(args)
+        self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+        self.call("deliver", "--verification", proof["id"])
+
+    def test_delivery_external_target_and_candidate_races_abort_whole_transaction(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        original = runtime.delivery_transaction
+        for ref in (proof["snapshot"]["target"]["ref"], proof["snapshot"]["candidate"]["ref"]):
+            expected = self.git("rev-parse", ref)
+            changed = proof["snapshot"]["candidate"]["oid"] if ref.endswith("release-alpha") else proof["snapshot"]["target"]["oid"]
+            def race(intent):
+                self.git("update-ref", ref, changed, expected)
+                original(intent)
+            with mock.patch.object(runtime, "delivery_transaction", race):
+                with self.assertRaises(module.Error):
+                    runtime.deliver(args)
+            receipt = "refs/manager-runtime/deliveries/" + runtime.delivery_id(proof["id"])
+            self.assertEqual(self.git("for-each-ref", "--format=%(refname)", receipt), "")
+            if ref.endswith("integration"):
+                self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+            self.git("update-ref", ref, expected, changed)
+        self.call("deliver", "--verification", proof["id"])
+
+    def test_delivery_symbolic_target_and_unreadable_inventory_are_rejected(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        original_gate = runtime.delivery_gate
+        @contextlib.contextmanager
+        def symbolic_gate(call_args):
+            with original_gate(call_args):
+                self.git("symbolic-ref", "refs/heads/release-alpha", "refs/heads/" + self.git("branch", "--show-current"))
+                yield
+        with mock.patch.object(runtime, "delivery_gate", symbolic_gate):
+            with self.assertRaises(module.Error):
+                runtime.deliver(args)
+        self.git("symbolic-ref", "--delete", "refs/heads/release-alpha")
+        self.git("update-ref", "refs/heads/release-alpha", proof["snapshot"]["target"]["oid"])
+        original_run = module.run
+        for output in (b"", b"worktree /broken\0branch refs/heads/elsewhere\0\0"):
+            def malformed(argv, **kwargs):
+                if list(argv)[-4:] == ["worktree", "list", "--porcelain", "-z"]:
+                    return subprocess.CompletedProcess(argv, 0, output, b"")
+                return original_run(argv, **kwargs)
+            with mock.patch.object(module, "run", malformed):
+                with self.assertRaises(module.Error):
+                    runtime.deliver(args)
+        with mock.patch.object(runtime, "delivery_inventory", side_effect=module.Error("Cannot read inventory")):
+            with self.assertRaises(module.Error):
+                runtime.deliver(args)
+        self.call("deliver", "--verification", proof["id"])
+
+    def test_delivery_competing_candidates_only_one_updates_shared_target(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.integration_fixture()
+        self.create_manager("beta")
+        self.integration_fixture(manager="beta")
+        alpha = self.combined_verify()
+        beta = self.combined_verify(manager="beta", target="refs/heads/release-alpha")
+        def deliver(pair):
+            manager, proof = pair
+            command = [sys.executable, str(CLI), "--root", str(self.root), "--manager-id", manager,
+                       "--owner-file", str(self.credentials[manager]), "deliver", "--verification", proof["id"]]
+            result = subprocess.run(command, env=self.env, capture_output=True)
+            return result.returncode, json.loads(result.stdout)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(deliver, (("alpha", alpha), ("beta", beta))))
+        self.assertEqual(sorted(code for code, _ in results), [0, 1])
+        winner = next(result for code, result in results if code == 0)
+        self.assertEqual(self.git("rev-parse", "release-alpha"), winner["new_oid"])
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)", "refs/manager-runtime/deliveries").splitlines(), [winner["receipt_ref"]])
+        loser = "beta" if winner["manager_id"] == "alpha" else "alpha"
+        tree = self.root / ".manager" / loser / "integration"
+        merged = subprocess.run(["git", "-C", str(tree), "merge", "--no-commit", winner["target"]], capture_output=True)
+        self.assertEqual(merged.returncode, 1)  # Both managers changed the same base line.
+        (tree / "base.txt").write_text("alpha accepted change\nbeta accepted change\n")
+        self.git("add", "base.txt", root=tree)
+        self.git("commit", "-qm", "Integrate newer target and resolve fixture conflict", root=tree)
+        renewed = self.combined_verify(manager=loser, target=winner["target"])
+        delivered = self.call("deliver", "--verification", renewed["id"], manager=loser)
+        self.assertEqual(delivered["old_oid"], winner["new_oid"])
+        self.assertEqual(self.git("rev-parse", winner["target"]), delivered["new_oid"])
+
+    def test_delivery_different_roots_share_control_and_maintenance_lock(self):
+        self.integration_fixture()
+        alpha_root, alpha_home = self.root, self.home
+        linked = self.directory / "second-root"
+        self.git("worktree", "add", "-b", "second-root", str(linked), "HEAD")
+        self.root, self.home = linked, linked / ".manager" / "beta"
+        try:
+            self.create_manager("beta")
+            self.integration_fixture(manager="beta")
+            beta = self.combined_verify(manager="beta", target="refs/heads/release-alpha")
+        finally:
+            self.root, self.home = alpha_root, alpha_home
+        alpha = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(alpha)
+        with module.lock(runtime.control / "maintenance.lock"):
+            blocked = self.call("deliver", "--verification", beta["id"], root=linked, manager="beta", ok=False)
+            self.assertIn(str(runtime.control / "maintenance.lock"), blocked["error"])
+        result = self.call("deliver", "--verification", beta["id"], root=linked, manager="beta")
+        self.assertEqual(result["git_common_dir"], str(runtime.common))
+        self.call("deliver", "--verification", alpha["id"], ok=False)
+
+    def test_delivery_long_checks_hold_no_common_gate(self):
+        self.integration_fixture()
+        self.create_manager("beta")
+        self.integration_fixture(manager="beta")
+        beta = self.combined_verify(manager="beta")
+        process, finish = self.start_verify(action=["integration", "verify", "--target", "refs/heads/release-alpha", "--source", "T001"])
+        self.call("deliver", "--verification", beta["id"], manager="beta")
+        self.spawn("T002", manager="beta")
+        self.finish_verify(process, finish, passed=True)
+
+    def test_delivery_interrupted_intent_reconciles_without_inventing_success(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        with mock.patch.object(runtime, "delivery_transaction", side_effect=RuntimeError("Fixture interruption before transaction")):
+            with self.assertRaises(RuntimeError):
+                runtime.deliver(args)
+        self.assertEqual(self.call("reconcile")["deliveries"][0]["state"], "not_committed")
+        self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+        self.takeover()
+        self.assertEqual(self.call("deliver", "--verification", proof["id"])["state"], "committed")
+
+    def test_delivery_process_death_after_transaction_recovers_receipt(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        marker = self.directory / "committed-marker"
+        script = self.directory / "delivery-crash.py"
+        script.write_text("import runpy, sys, pathlib, time, argparse\n"
+            "sys.path.insert(0, " + repr(str(CLI.parent)) + ")\n"
+            "m = runpy.run_path(" + repr(str(CLI)) + ")\n"
+            "r = m['Runtime'](" + repr(str(self.root)) + ", 'alpha')\n"
+            "def pause(*args):\n pathlib.Path(" + repr(str(marker)) + ").write_text('transaction complete')\n time.sleep(30)\n"
+            "r.save_delivery_result = pause\n"
+            "r.deliver(argparse.Namespace(verification=" + repr(proof["id"]) + ", owner_file=" + repr(str(self.credentials["alpha"])) + "))\n")
+        process = subprocess.Popen([sys.executable, str(script)], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 10
+            while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists())
+        finally:
+            process.kill()
+            process.communicate(timeout=10)
+        result = self.call("reconcile")["deliveries"][0]
+        self.assertEqual(result["state"], "committed")
+        self.assertEqual(self.call("deliver", "--verification", proof["id"]), result)
+
+    def test_delivery_missing_wrong_or_symbolic_receipts_never_infer_success(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        result = self.call("deliver", "--verification", proof["id"])
+        for state in ("wrong", "symbolic", "missing"):
+            if state == "wrong":
+                self.git("update-ref", result["receipt_ref"], result["old_oid"])
+            elif state == "symbolic":
+                self.git("symbolic-ref", result["receipt_ref"], result["target"])
+            else:
+                self.git("symbolic-ref", "--delete", result["receipt_ref"])
+                self.git("update-ref", result["target"], result["old_oid"])
+            self.call("deliver", "--verification", proof["id"], ok=False)
+            self.assertEqual(self.call("reconcile")["deliveries"][0]["state"], "ambiguous")
+        self.assertEqual(self.git("rev-parse", result["target"]), result["old_oid"])
+
+    def test_delivery_missing_receipt_with_external_target_change_is_diagnostic(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        with mock.patch.object(runtime, "delivery_transaction", side_effect=RuntimeError("Fixture interruption")):
+            with self.assertRaises(RuntimeError):
+                runtime.deliver(args)
+        self.git("update-ref", "refs/heads/release-alpha", proof["snapshot"]["candidate"]["oid"])
+        self.assertEqual(self.call("reconcile")["deliveries"][0]["state"], "external_change")
+        self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)", "refs/manager-runtime/deliveries"), "")
+
+    def test_delivery_control_symlinks_and_corrupt_intents_are_preserved(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        outside = self.directory / "outside-deliveries"
+        outside.mkdir()
+        directory = runtime.control / "deliveries"
+        directory.symlink_to(outside)
+        self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertEqual(list(outside.iterdir()), [])
+        directory.unlink()
+        with mock.patch.object(runtime, "delivery_transaction", side_effect=RuntimeError("Fixture interruption")):
+            with self.assertRaises(RuntimeError):
+                runtime.deliver(args)
+        intent = directory / runtime.delivery_id(proof["id"]) / "intent.json"
+        value = json.loads(intent.read_text())
+        value["new_oid"] = value["old_oid"]
+        intent.write_text(json.dumps(value))
+        original = intent.read_bytes()
+        self.call("deliver", "--verification", proof["id"], ok=False)
+        self.call("reconcile", ok=False)
+        self.assertEqual(intent.read_bytes(), original)
+
+    def test_delivery_preexisting_and_racing_receipts_are_not_adopted(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        receipt = "refs/manager-runtime/deliveries/" + runtime.delivery_id(proof["id"])
+        candidate = proof["snapshot"]["candidate"]["oid"]
+        self.git("update-ref", receipt, candidate)
+        self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertFalse((runtime.control / "deliveries").exists())
+        self.git("update-ref", "-d", receipt, candidate)
+        original = runtime.delivery_transaction
+        def race(intent):
+            self.git("update-ref", receipt, candidate)
+            original(intent)
+        with mock.patch.object(runtime, "delivery_transaction", race):
+            with self.assertRaises(module.Error):
+                runtime.deliver(args)
+        for _ in range(2):
+            self.assertEqual(self.call("reconcile")["deliveries"][0]["state"], "ambiguous")
+            self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
+
+    def test_delivery_lost_receipt_after_common_result_before_manager_receipt_stays_ambiguous(self):
+        self.integration_fixture()
+        proof = self.combined_verify()
+        module, runtime, args = self.delivery_runtime(proof)
+        original = module.atomic_json
+        def interrupt(path, value):
+            if path.parent == self.home / "delivery":
+                raise RuntimeError("Fixture interruption before manager receipt")
+            original(path, value)
+        with mock.patch.object(module, "atomic_json", interrupt):
+            with self.assertRaises(RuntimeError):
+                runtime.deliver(args)
+        identity = runtime.delivery_id(proof["id"])
+        self.assertFalse((self.home / "delivery" / (identity + ".json")).exists())
+        self.git("update-ref", "-d", "refs/manager-runtime/deliveries/" + identity)
+        self.git("update-ref", "refs/heads/release-alpha", proof["snapshot"]["target"]["oid"])
+        for _ in range(2):
+            self.assertEqual(self.call("reconcile")["deliveries"][0]["state"], "ambiguous")
+            self.call("deliver", "--verification", proof["id"], ok=False)
+        self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
 
     @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
     def test_real_interactive_worker_receives_message(self):

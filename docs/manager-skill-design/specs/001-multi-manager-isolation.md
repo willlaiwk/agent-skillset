@@ -1,8 +1,8 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Implementing；MM-02 namespace／路由、MM-03 主控交接與 MM-04 獨立整合／combined evidence 已實作；完整功能尚未完成。
+- 狀態：Implementing；MM-02 namespace／路由、MM-03 主控交接、MM-04 獨立整合／combined evidence 與 MM-05 本地交付 gate 已實作；完整功能尚未完成。
 - 建立：2026-10-08；更新：2026-10-10。
-- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；本輪工作樹含 MM-04。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md) 與 [MM-04 validation](../reviews/MM-04-validation.md)。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；MM-04 提交 `11644a4`；本輪工作樹含 MM-05。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md)、[MM-04 validation](../reviews/MM-04-validation.md) 與 [MM-05 validation](../reviews/MM-05-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
@@ -185,7 +185,7 @@ Combined checks 在 integration tree、operation lock 下、common 鎖外執行�
 
 外部 direct ref 的 OID 變更由 expected-OID transaction 偵測；advisory lock 不阻止外部工具同時 checkout target，expected OID 也不能證明 ref 未被改成指向相同 OID 的 symbolic ref。支援前提是交付短區間內，參與者不繞過 common maintenance 協調來建立／切換 target worktree 或改變 target/candidate ref 的 direct/symbolic 類型。若無法維持此條件，使用 repository 的外部交付流程。沒有宣稱跨 Git ref 與 worktree registration 的原子鎖；MM-05 測試必須分開驗證 external OID race、symbolic ref 預檢與已 checkout 的拒絕。
 
-Git 機制依據：[update-ref 的 expected old OID 與 transaction](https://git-scm.com/docs/git-update-ref)、[worktree inventory 與 checkout 限制](https://git-scm.com/docs/git-worktree)。這些 Git 性質不代表 manager gate 已實作。
+Git 機制依據：[update-ref 的 expected old OID 與 transaction](https://git-scm.com/docs/git-update-ref)、[worktree inventory 與 checkout 限制](https://git-scm.com/docs/git-worktree)。Manager gate 的實作證據另見 [MM-05 validation](../reviews/MM-05-validation.md)，不以 Git primitive probe 代替 runtime 驗收。
 
 ## 8. 舊格式遷移契約
 
@@ -269,12 +269,13 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)，MM-05 的 AC-08–AC-09 範圍見 [交付 gate 驗證](../reviews/MM-05-validation.md)；migration 與真實 provider 的 AC 仍待完成，不以契約定案或 fake provider 宣稱整體驗收。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-10 | MM-05：deliver／common maintenance-delivery gate、final evidence/inventory recheck、expected-OID transaction／receipt、中斷恢復與永久成功／失敗診斷；維持 Implementing，migration 與真實 Agent 待後續 |
 | 2026-10-10 | MM-04：integration init/status/verify、source acceptance／combined snapshot／owner-committed hash index、隔離及中斷／fencing 驗證；clarify verify preparation 與 MM-05 checkout/delivery gate，尚未實作交付／migration／真實 Agent |
 | 2026-10-10 | MM-03：owner release/takeover、交接 journal／事件恢復、operation lock、鎖外 verify／generation fencing 與 AC-06 驗證完成；SPEC 維持 Implementing，MM-04–MM-08 與真實 Agent 驗證待後續 |
 | 2026-10-10 | MM-02：實作 namespace、完整 launch identity、純查閱與基本 claim 前置；補驗證證據，維持 Implementing，未完成 ownership handoff／integration／delivery／migration／真實 provider |

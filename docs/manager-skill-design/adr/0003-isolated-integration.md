@@ -1,6 +1,6 @@
 # ADR-0003 — 隔離 Manager 整合，序列化共同交付
 
-- 狀態：Accepted；MM-04 獨立整合已實作，MM-05 共同交付待完成。
+- 狀態：Accepted；MM-04 獨立整合與 MM-05 共同本地交付已實作。
 - 日期：2026-10-08；定案：2026-10-09（MM-01）。
 - 關聯：[SPEC-001 §7](../specs/001-multi-manager-isolation.md#7-各自整合共用交付)、[MM-04–MM-05](../tasks.md)、[契約檢查](../reviews/MM-01-contract-review.md)。
 
@@ -37,3 +37,5 @@ External direct-ref OID 競爭由 transaction 偵測，但 Git expected OID 不�
 2026-10-09 收斂 Q-02，採取上述較小的本地 workflow，取代 Proposed 草案中待定的專用 checkout 型交付。暫存 Git 實驗確認 transaction、receipt 與 inventory 性質，也確認 symbolic-ref 邊界；結果見契約檢查。MM-04／MM-05 均尚未實作。
 
 2026-10-10 MM-04 實作隔離 integration init/status/verify、source acceptance／combined snapshots、owner-committed evidence hash index 與中斷／busy／fencing，證據見 [MM-04 validation](../reviews/MM-04-validation.md)。Control lock 放在 Git tree 外，避免影響 clean candidate。Verify 可準備 checked-out branch 的證據而不更新 ref；最終 inventory／checked-out 拒絕仍屬 MM-05 delivery gate，未放寬交付決策。沒有內建 merge/import/push 或新的授權；本補充記錄實作，不改寫原取捨。
+
+2026-10-10 MM-05 實作 `deliver --verification ID`、共用 maintenance/delivery 短 gate、最終 evidence/owner/inventory 核對、expected-OID transaction 與 unique receipt，以及 owner reconcile 的中斷診斷。永久保存曾成功紀錄及 transaction rejection/error history，避免 receipt 遺失或外部衝突後誤認可重交／成功。仍拒絕任何 registered checkout target，不更新 HEAD/index，不提供 force/push/PR 或新授權；證據見 [MM-05 validation](../reviews/MM-05-validation.md)。本補充記錄採用決策的實作，未改寫原取捨。

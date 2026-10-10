@@ -24,6 +24,7 @@ Its local runtime provides:
 - Structured status reports, durable messages, and message acknowledgments.
 - Independent verification records and an acceptance gate that checks whether reviewed results have changed.
 - Per-manager integration worktrees and combined evidence bound to accepted sources, candidate and target snapshots.
+- A shared local delivery gate with expected-OID transactions and recoverable receipts, limited to existing branches that no registered worktree has checked out.
 - Persisted task state, diagnostics, and bounded retries that retain existing work.
 
 Worker completion requires independent manager verification. The manager also owns integration and verification of the combined result. The current runtime uses polling; background scheduling and event-triggered manager wake-up are not implemented.
@@ -46,7 +47,7 @@ verify the integrated result before reporting completion.
 
 Manager runtime data is stored in `.manager/{manager-id}/` at the managed project's Git root. Initialization uses shared Git `info/exclude` and preserves the user's `.gitignore`. Save the returned ID, explicitly claim ownership, and use that selector and private owner credential for management writes. Workers start from committed Git refs; relevant uncommitted changes must be accounted for in the task plan.
 
-The current v2 implementation is staged: manager namespaces, owner handoff, long-verification fencing, and isolated integration/combined verification are available; delivery commands and legacy migration are still pending. V1 data is preserved and requires deliberate migration rather than implicit initialization.
+The current v2 implementation is staged: manager namespaces, owner handoff, long-verification fencing, isolated integration/combined verification, and the local delivery gate are available; legacy migration and real-provider validation are still pending. Delivery uses existing user/repository authorization and provides no push or PR creation. V1 data is preserved and requires deliberate migration rather than implicit initialization.
 
 ## Development
 

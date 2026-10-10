@@ -1203,7 +1203,10 @@ class Runtime:
     def direct_commit(self, ref):
         if run(["git", "-C", self.root, "symbolic-ref", "-q", ref], check=False).returncode == 0:
             raise Error("Symbolic refs are not supported: " + ref)
-        return git(self.root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+        oid = git(self.root, "show-ref", "--verify", "--hash", ref)
+        if git(self.root, "cat-file", "-t", oid) != "commit":
+            raise Error("Ref must point directly to a commit: " + ref)
+        return oid
 
     def integration_identity(self, record):
         tree = Path(record["worktree"])
@@ -1470,6 +1473,234 @@ class Runtime:
         result["record"] = record
         return result
 
+    def delivery_id(self, verification):
+        if not self.valid_assignment_id(verification):
+            raise Error("Invalid combined verification ID")
+        # Stable across retries/handoffs; canonical root prevents cross-root collisions.
+        return hashlib.sha256(json.dumps([str(self.root), self.manager_id, verification]).encode()).hexdigest()[:32]
+
+    def delivery_proof(self, verification):
+        self.delivery_id(verification)
+        metadata = self.integration_record()
+        evidence = self.home / "integration-verification" / verification / "record.json"
+        record = read_json(evidence)
+        digest = hashlib.sha256(read_bytes(evidence)).hexdigest()
+        if (not self.namespace.matches(record) or record.get("resource") != "integration"
+                or record.get("id") != verification or record.get("passed") is not True
+                or digest != metadata["verifications"].get(verification)):
+            raise Error("Delivery requires owner-committed successful combined evidence")
+        return record, digest
+
+    def delivery_inventory(self, target):
+        output = run(["git", "-C", self.root, "worktree", "list", "--porcelain", "-z"]).stdout
+        if not output.endswith(b"\0\0"):
+            raise Error("Unreadable/incomplete worktree inventory")
+        inventory, paths = [], set()
+        for block in output[:-2].decode(errors="surrogateescape").split("\0\0"):
+            fields = block.split("\0")
+            if not fields[0].startswith("worktree ") or not fields[0][9:]:
+                raise Error("Invalid worktree inventory entry")
+            entry = {"worktree": str(Path(fields[0][9:]).resolve())}
+            for field in fields[1:]:
+                key, _, value = field.partition(" ")
+                if key not in ("HEAD", "branch", "detached", "bare", "locked", "prunable") or key in entry:
+                    raise Error("Invalid/duplicate worktree inventory field")
+                entry[key] = value
+            if (entry["worktree"] in paths or ("bare" not in entry and
+                    (not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", entry.get("HEAD", ""))
+                     or ("branch" in entry) == ("detached" in entry)))):
+                raise Error("Ambiguous/incomplete worktree inventory")
+            paths.add(entry["worktree"])
+            inventory.append(entry)
+            if entry.get("branch") == target:
+                raise Error("Delivery target is checked out in a registered worktree (including missing/locked entries): " + entry["worktree"])
+        return inventory
+
+    @contextlib.contextmanager
+    def delivery_gate(self, args):
+        with contextlib.ExitStack() as locks:
+            locks.enter_context(lock(self.control / "maintenance.lock"))
+            locks.enter_context(lock(self.control / "delivery.lock"))
+            locks.enter_context(lock(self.home / ".integration.operation.lock", nonblocking=True))
+            locks.enter_context(lock(self.home / ".lock"))
+            self.load()
+            self.require_owner(args.owner_file)
+            yield
+
+    def delivery_intent(self, verification):
+        identity = self.delivery_id(verification)
+        path = reject_symlinks(self.control / "deliveries" / identity / "intent.json")
+        if not path.exists():
+            return None
+        intent = read_json(path)
+        proof, digest = self.delivery_proof(verification)
+        snapshot = proof["snapshot"]
+        if (not self.namespace.matches(intent) or type(intent.get("version")) is not int or intent.get("version") != 1
+                or intent.get("id") != identity or intent.get("verification_id") != verification
+                or intent.get("git_common_dir") != str(self.common)
+                or type(intent.get("generation")) is not int or intent["generation"] < 1
+                or intent.get("evidence_sha256") != digest
+                or intent.get("target") != snapshot["target"]["ref"]
+                or intent.get("old_oid") != snapshot["target"]["oid"]
+                or intent.get("candidate_ref") != snapshot["candidate"]["ref"]
+                or intent.get("new_oid") != snapshot["candidate"]["oid"]
+                or intent.get("receipt_ref") != "refs/manager-runtime/deliveries/" + identity):
+            raise Error("Delivery intent identity/evidence mismatch; preserve and diagnose")
+        return intent
+
+    def delivery_result(self, path, intent):
+        reject_symlinks(path)
+        if not path.exists():
+            return {}
+        result = read_json(path)
+        if (any(result.get(k) != v for k, v in intent.items())
+                or result.get("state") not in ("committed", "not_committed", "ambiguous", "external_change", "transaction_rejected")
+                or type(result.get("committed_once")) is not bool
+                or type(result.get("transaction_rejected")) is not bool
+                or not isinstance(result.get("errors"), list)
+                or any(not isinstance(e, dict) or not isinstance(e.get("error"), str)
+                       or not isinstance(e.get("at"), str) for e in result["errors"])):
+            raise Error("Delivery result identity/metadata mismatch; preserve and diagnose")
+        return result
+
+    def receipt_state(self, intent):
+        ref = intent["receipt_ref"]
+        result_path = reject_symlinks(self.control / "deliveries" / intent["id"] / "result.json")
+        previous = self.delivery_result(result_path, intent)
+        if run(["git", "-C", self.root, "symbolic-ref", "-q", ref], check=False).returncode == 0:
+            return "ambiguous"
+        receipt = run(["git", "-C", self.root, "show-ref", "--verify", "--hash", ref], check=False)
+        if receipt.returncode == 0:
+            return "committed" if (receipt.stdout.decode().strip() == intent["new_oid"]
+                                   and not previous.get("transaction_rejected")) else "ambiguous"
+        # show-ref uses 128 for a missing ref too; inventory distinguishes absence
+        # from command/corruption errors rather than treating every error as absence.
+        refs = git(self.root, "for-each-ref", "--format=%(refname)", ref).splitlines()
+        if ref in refs:
+            return "ambiguous"
+        manager_path = reject_symlinks(self.home / "delivery" / (intent["id"] + ".json"))
+        for path in (result_path, manager_path):
+            if self.delivery_result(path, intent).get("committed_once"):
+                return "ambiguous"  # A lost receipt never allows re-delivery.
+        try:
+            target = self.direct_commit(intent["target"])
+        except Error:
+            return "external_change"
+        return "not_committed" if target == intent["old_oid"] else "external_change"
+
+    def save_delivery_result(self, intent, state, error=None):
+        path = self.control / "deliveries" / intent["id"] / "result.json"
+        previous = self.delivery_result(path, intent)
+        historical = self.delivery_result(self.home / "delivery" / (intent["id"] + ".json"), intent)
+        errors = list((previous or historical).get("errors", []))
+        if error is not None:
+            errors.append({"at": now(), "error": error})
+        result = {**intent, "state": state, "diagnostic_error": error, "errors": errors,
+                  "committed_once": state == "committed" or bool(previous.get("committed_once")) or bool(historical.get("committed_once")),
+                  "transaction_rejected": state == "transaction_rejected" or
+                  (state != "committed" and bool(previous.get("transaction_rejected")))}
+        if not path.exists() or read_json(path) != result:
+            atomic_json(path, result)
+        if state == "committed":
+            directory = reject_symlinks(self.home / "delivery")
+            directory.mkdir(exist_ok=True)
+            sync_directory(self.home)
+            receipt = directory / (intent["id"] + ".json")
+            if self.delivery_result(receipt, intent) != result:
+                atomic_json(receipt, result)
+        return result
+
+    def delivery_transaction(self, intent):
+        transaction = ("start\noption no-deref\nverify " + intent["candidate_ref"] + " " + intent["new_oid"] +
+                       "\noption no-deref\nupdate " + intent["target"] + " " + intent["new_oid"] + " " + intent["old_oid"] +
+                       "\noption no-deref\ncreate " + intent["receipt_ref"] + " " + intent["new_oid"] +
+                       "\nprepare\ncommit\n")
+        result = run(["git", "-C", self.root, "update-ref", "--stdin"], data=transaction.encode(), check=False)
+        if result.returncode:
+            raise Error("Delivery ref transaction rejected: " + result.stderr.decode(errors="replace").strip())
+
+    def deliver(self, args):
+        self.load()
+        self.require_owner(args.owner_file)
+        existing = self.delivery_intent(args.verification)
+        if existing is None:
+            # No common locks while discovering missing/stale evidence or decisions.
+            status = self.integration_status(args.verification)
+            if not status["eligible"]:
+                raise Error(status.get("diagnostic_error") or "Combined verification is not eligible")
+        with self.delivery_gate(args):
+            existing = self.delivery_intent(args.verification)
+            if existing:
+                state = self.receipt_state(existing)
+                if state == "committed":
+                    return self.save_delivery_result(existing, state)
+                if state != "not_committed":
+                    self.save_delivery_result(existing, state)
+                    raise Error("Delivery " + state + "; preserve intent/receipt and diagnose")
+            proof, digest = self.delivery_proof(args.verification)
+            # Hold source report locks through the transaction, so report writers
+            # cannot race the final evidence check. Registry fences owner/task writes.
+            with contextlib.ExitStack() as reports:
+                for identity in sorted(s["task_id"] for s in proof["snapshot"]["sources"]):
+                    reports.enter_context(lock(self.directory(identity) / ".report.lock"))
+                status = self.integration_status(args.verification)
+                if not status["eligible"]:
+                    raise Error(status.get("diagnostic_error") or "Combined verification is not eligible")
+                snapshot = proof["snapshot"]
+                inventory = self.delivery_inventory(snapshot["target"]["ref"])
+                reject_symlinks(self.home / "delivery" / (self.delivery_id(args.verification) + ".json"))
+                intent = existing or {**self.namespace.envelope(), "version": 1,
+                    "id": self.delivery_id(args.verification), "git_common_dir": str(self.common),
+                    "generation": self.require_owner(args.owner_file)["generation"], "created_at": now(),
+                    "verification_id": args.verification, "evidence_sha256": digest,
+                    "target": snapshot["target"]["ref"], "old_oid": snapshot["target"]["oid"],
+                    "candidate_ref": snapshot["candidate"]["ref"], "new_oid": snapshot["candidate"]["oid"],
+                    "receipt_ref": "refs/manager-runtime/deliveries/" + self.delivery_id(args.verification),
+                    "inventory": inventory}
+                directory = reject_symlinks(self.control / "deliveries" / intent["id"])
+                result_path = reject_symlinks(directory / "result.json")
+                if existing is None:
+                    manager_receipt = self.home / "delivery" / (intent["id"] + ".json")
+                    if result_path.exists() or manager_receipt.exists():
+                        raise Error("Unregistered delivery result exists; preserve and diagnose")
+                    ref = intent["receipt_ref"]
+                    if (run(["git", "-C", self.root, "symbolic-ref", "-q", ref], check=False).returncode == 0
+                            or ref in git(self.root, "for-each-ref", "--format=%(refname)", ref).splitlines()):
+                        raise Error("Unregistered delivery receipt ref exists; preserve and diagnose")
+                directory.mkdir(parents=True, exist_ok=True)
+                sync_directory(self.control)
+                sync_directory(directory.parent)
+                if existing is None:
+                    atomic_json(directory / "intent.json", intent)
+                try:
+                    self.delivery_transaction(intent)
+                except Error as exc:
+                    state = "transaction_rejected" if str(exc).startswith("Delivery ref transaction rejected:") else self.receipt_state(intent)
+                    self.save_delivery_result(intent, state, str(exc))
+                    raise
+                return self.save_delivery_result(intent, "committed")
+
+    def reconcile_deliveries(self, args):
+        directory = reject_symlinks(self.control / "deliveries")
+        if not directory.exists():
+            return []
+        with self.delivery_gate(args):
+            results = []
+            for path in read_directory(directory):
+                if not self.valid_assignment_id(path.name):
+                    continue  # Preserve unknown artifacts; never adopt them.
+                intent_path = reject_symlinks(path / "intent.json")
+                if not intent_path.exists():
+                    continue
+                identity = read_json(intent_path)
+                if not self.namespace.matches(identity):
+                    continue
+                intent = self.delivery_intent(identity.get("verification_id"))
+                if intent is None or intent["id"] != path.name:
+                    raise Error("Delivery journal path/identity mismatch")
+                results.append(self.save_delivery_result(intent, self.receipt_state(intent)))
+            return results
+
     def escalate(self, args):
         self.reconcile()
         item = self.task(args.id)
@@ -1554,6 +1785,8 @@ def parser():
     p.add_argument("--review", required=True)
     p.add_argument("--command", action="append")
     p.add_argument("--timeout", type=int, default=600)
+    p = sub.add_parser("deliver", help="Authorized fast-forward of an existing un-checked-out local branch")
+    p.add_argument("--verification", required=True)
     return cli
 
 
@@ -1696,6 +1929,8 @@ def main():
                             assignment["assignment_id"] != os.environ["MANAGER_WORKER_ASSIGNMENT"]):
                         raise Error("Stale worker inbox identity")
                 result = read_action(runtime, args)
+            elif args.action == "deliver":
+                result = runtime.deliver(args)
             elif args.action == "integration":
                 runtime.load()
                 runtime.require_owner(args.owner_file)
@@ -1715,6 +1950,14 @@ def main():
                 runtime.load()  # Diagnose corrupt/foreign state before opening any write lock.
                 if args.action != "owner" or args.owner_action == "release":
                     runtime.require_owner(args.owner_file)
+                deliveries = []
+                if args.action == "reconcile":
+                    try:
+                        deliveries = runtime.reconcile_deliveries(args)
+                    except Error as exc:
+                        if "Runtime busy:" not in str(exc):
+                            raise
+                        deliveries = [{"state": "operation_busy", "diagnostic_error": str(exc)}]
                 with contextlib.ExitStack() as locks:
                     if args.action in ("spawn", "retry"):
                         locks.enter_context(lock(runtime.control / "maintenance.lock"))
@@ -1761,6 +2004,7 @@ def main():
                                 runtime.recover_integration()
                             if args.action == "reconcile":
                                 result = runtime.reconcile()
+                                result["deliveries"] = deliveries
                                 result["integration"] = runtime.integration_status()
                                 if not runtime.integration_locked and (runtime.home / "integration.json").exists():
                                     result["notices"].append({"resource": "integration", "issue": "operation_busy"})

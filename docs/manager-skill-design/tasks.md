@@ -2,7 +2,7 @@
 
 最後更新：2026-10-10。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-10 完成 MM-02 namespace／路由、MM-03 主控交接及 MM-04 獨立整合／combined evidence，SPEC-001 為 Implementing；下一步 MM-05。MM-05–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
+2026-10-10 完成 MM-02 namespace／路由、MM-03 主控交接、MM-04 獨立整合／combined evidence 及 MM-05 共用本地交付 gate，SPEC-001 為 Implementing；下一步 MM-06。MM-06–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -13,7 +13,7 @@
 | MM-02 | Manager selector、namespace 與 worker 路由 | Done | MM-01 | SPEC-001 §3–5；ADR-0002 |
 | MM-03 | 同 ID 主控所有權與交接 | Done | MM-02 | SPEC-001 §6；ADR-0002 |
 | MM-04 | 每 manager 的整合工作樹與證據 | Done | MM-02、MM-03 | SPEC-001 §7.1；ADR-0003 |
-| MM-05 | Repository 共用交付 gate | Todo | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
+| MM-05 | Repository 共用交付 gate | Done | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
 | MM-06 | v1 → v2 migration 與中斷恢復 | Todo | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
 | MM-07 | Skill／protocol／reference 同步與整體驗證 | Todo | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
 | MM-08 | 新格式真實 provider smoke test | Todo | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
@@ -73,7 +73,9 @@ MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它�
 - 目標：common-directory 短 gate；首版只更新未 checkout 的既有本地分支，以 expected-OID transaction 與 receipt 支援故障診斷；不內建 push／PR。
 - 完成條件：AC-08–AC-09；過期成果不能覆蓋較新 target；checked-out branch 不被裸更新；不新增隱式 merge/push 授權。
 - 驗證：不同 root 共用 repository、兩候選競爭、外部 ref 改動、中斷與鎖釋放；等待決策／長驗證時其他 manager 能繼續準備。
-- 證據／阻塞／接續：未開始；依賴 MM-03、MM-04。
+- 結果：deliver、common maintenance/delivery gate、最終 owner/evidence/inventory 核對、expected-OID transaction／unique receipt、reconcile 中斷診斷與永久成功／失敗歷史完成；首版仍拒絕所有 registered checkout targets，無 force/push/PR。
+- 證據：[MM-05 validation](reviews/MM-05-validation.md)；最終預設 86 項（85 通過、1 real-only skip）、真實 tmux 86 項全通過，包含 AC-08–AC-09、external OID race、不同 roots、競爭後重新整合／驗證、SIGKILL 與 receipt 遺失／衝突。
+- 接續：MM-06 migration；MM-07 整體組合驗證與 MM-08／MVP-02 真實 Agent 缺口保留。Git 提交以實際 status/log 為準。
 
 ### MM-06 — Migration
 

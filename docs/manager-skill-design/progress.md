@@ -1,18 +1,27 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-10。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 實作提交：`385e331`。MM-03 提交：`b302ee8`。MM-04 本輪工作樹完成；是否提交以實際 status/log 為準。
+最後更新：2026-10-10。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05 本輪工作樹完成、尚未提交；後續以實際 status/log 為準。
 
-**目前狀態：MM-02–MM-04 完成（namespace／主控交接／獨立整合與 combined evidence），最終預設／真實 tmux 測試通過；SPEC-001 為 Implementing。下一步 MM-05 共用交付 gate；真實 Agent smoke test 仍待後續完成。**
+**目前狀態：MM-02–MM-05 完成（namespace／主控交接／獨立整合與 combined evidence／共用本地交付 gate），最終預設／真實 tmux 測試通過；SPEC-001 為 Implementing。下一步 MM-06 migration；真實 Agent smoke test 仍待後續完成。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 接續 **MM-05**：先讀 [SPEC-001 §7.2](specs/001-multi-manager-isolation.md#72-第一版本地交付-gateq-02)、ADR-0003 與 [MM-04 validation](reviews/MM-04-validation.md)。沿用 integration tree／source snapshots／review／owner-committed evidence hash index，再建 common maintenance/delivery 短 gate、最終 owner/evidence/target/inventory 核對、expected-OID transaction＋receipt 與中斷恢復。不能只相信 integration status 的 eligible，不能更新 checked-out target。原 **MVP-02/MM-08** 真實 Agent 缺口保留。
+4. 接續 **MM-06**：先讀 [SPEC-001 §8](specs/001-multi-manager-isolation.md#8-舊格式遷移契約)、[ADR-0004](adr/0004-runtime-migration.md) 與 [MM-05 validation](reviews/MM-05-validation.md)。沿用 common maintenance 鎖與 namespace／owner／operation 機制，實作零寫入 dry-run、source hash/quiescence、完整 backup/journal、refs／worktree mapping、歷史資格失效、forward resume／tombstone。先以暫存 v1 fixture 驗證，不搬移使用者真實資料。保留 MM-05 的 expected-OID／receipt 與 checked-out target 拒絕；原 **MVP-02/MM-08** 真實 Agent 缺口不關閉。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-10：MM-05 完成與下一步
+
+- 接續使用者指定的 MM-05；開始時工作樹乾淨，確認 MM-04 已提交為 `11644a4`，沒有重複提交舊工作。
+- 完成 deliver／common maintenance-delivery gate、最終 owner/evidence/inventory 核對，以及單一 no-deref transaction 同時 verify candidate、expected-old 更新 target、create unique receipt。只交付既有未 checkout 本地分支；dirty 主 checkout、accepted task trees、HEAD/index 保留。
+- 完成 durable intent、common result／manager 收據、same-verification 重跑、owner reconcile 中斷診斷。Matching receipt 證明已提交；缺 receipt 與 old target 只允許完整重查後重試；ambiguous／external_change 不推論成功或自動回寫。永久保存 committed_once 及 rejected transaction/error history，避免收據遺失或外部衝突後誤交付。
+- 證據：[MM-05 validation](reviews/MM-05-validation.md)。最終預設 86 項（85 通過、1 real-only skip）；真實 tmux 86 項全通過；YAML 成功路徑補驗 1 項通過（1.475s）、skill 格式通過。只有假的互動式 Worker，沒有模型/API；真實 Agent／MM-08／MVP-02 保留。
+- 同步 SKILL／protocol／runtime reference／README、spec／ADR／task／progress。Python 語法、可執行權限、Markdown 本地連結／anchors／fences 與 diff check 結果見 validation。尚未 commit/push，不操作使用者真實 runtime。
+- 下一步 MM-06；MM-06–MM-08 未開始，SPEC-001 維持 Implementing。Git advisory locks 仍需合作協調 external checkout／same-OID symbolic ref-type 改動，不宣稱跨 refs/worktree registration 原子性。
 
 ## 2026-10-10：MM-04 完成與下一步
 
@@ -67,7 +76,7 @@
 | 範圍 | 當前能力 |
 | --- | --- |
 | Skill 行為 | Manager 擁有 outcome，規劃、派工、監督、回答問題、review、獨立驗證與整合 |
-| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers`、`owner status/claim/release/takeover` 與 `integration init/status/verify` |
+| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers`、`owner status/claim/release/takeover`、`integration init/status/verify` 與 `deliver` |
 | Agent adapters | Codex／Claude Code 互動式 CLI；`auto` 偵測、明確指定 provider、基本角色設定 |
 | 隔離 | 每個 Worker 使用獨立 tmux window 與 Git worktree；預設從已提交的 `HEAD` 建立，可指定 `--base` |
 | 任務依賴 | 可登錄依賴；只允許依賴已被 Manager 接受的任務啟動；尚無自動排程 |
@@ -76,7 +85,7 @@
 | 持久化 | `.manager/{id}/state.json`／owner、task briefs／reports／results、namespaced events/inbox/logs/驗證紀錄及 retry ack 歷史 |
 | 查閱／主控 | status/peek/events/inbox/managers/owner status 零管理資料寫入；claim/release/takeover、credential guard／generation fencing 與交接恢復 |
 | 驗收 | Worker `done` 先進入 Manager `verification`；`verify` 需 review 與檢查指令，`accept` 再確認證據及成果未變動 |
-| 整合 | 每 manager integration branch/tree、current accepted 來源、combined evidence／hash index／純讀資格核對；delivery gate 尚未提供 |
+| 整合／交付 | 每 manager integration branch/tree、current accepted 來源、combined evidence／hash index／純讀資格核對；common 短 gate 對既有未 checkout 本地分支 transaction／receipt 交付與中斷診斷 |
 | 恢復 | 偵測中斷／stale／orphan；保留成果；`retry` 沿用 worktree、遞增 attempt，拒絕舊 attempt 回報；預設最多 2 次 restart |
 | 設定 | `.manager.yml`；預設流程只使用 Python 標準函式庫，YAML 語法需 PyYAML，JSON 語法不需額外依賴 |
 

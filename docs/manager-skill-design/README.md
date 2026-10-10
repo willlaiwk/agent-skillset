@@ -23,13 +23,13 @@
 
 | ID | 主題 | 狀態 | 相關任務／決策 |
 | --- | --- | --- | --- |
-| SPEC-001 | [多 manager 隔離、整合與舊格式遷移](specs/001-multi-manager-isolation.md) | Implementing；namespace／主控／整合已驗證 | MM-01–MM-04 Done；MM-05–MM-08 Todo |
+| SPEC-001 | [多 manager 隔離、整合與舊格式遷移](specs/001-multi-manager-isolation.md) | Implementing；namespace／主控／整合／本地交付已驗證 | MM-01–MM-05 Done；MM-06–MM-08 Todo |
 
 | ID | 決策 | 狀態 |
 | --- | --- | --- |
 | ADR-0001 | [規格、ADR、任務與交接的文件分工](adr/0001-documentation-workflow.md) | Accepted；僅文件管理方式 |
 | ADR-0002 | [以 manager ID 隔離執行資料與識別](adr/0002-manager-identity.md) | Accepted；namespace 與主控交接已實作 |
-| ADR-0003 | [各 manager 獨立整合，共用交付入口](adr/0003-isolated-integration.md) | Accepted；獨立整合已實作，共用交付待完成 |
+| ADR-0003 | [各 manager 獨立整合，共用交付入口](adr/0003-isolated-integration.md) | Accepted；獨立整合與共用本地交付已實作 |
 | ADR-0004 | [遷移由 manager runtime 提供](adr/0004-runtime-migration.md) | Accepted；尚未實作 |
 
 ## 規格調整流程
@@ -60,4 +60,4 @@ Task 狀態使用 `Todo`、`In progress`、`Blocked`、`Done`、`Cancelled`。�
 3. 只讀當前任務相關的 spec、ADR、`design.md` 章節與 skill/runtime 參考。
 4. 接續後更新 task 與 progress；未跑的測試保持未驗證。
 
-2026-10-10 完成 MM-02 namespace／worker 路由、MM-03 主控交接及 MM-04 獨立整合／combined verification，證據見 [MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md) 與 [MM-04 validation](reviews/MM-04-validation.md)；MM-01 設計證據見 [contract review](reviews/MM-01-contract-review.md)。下一步為 MM-05 共用交付 gate。V2 為分階段實作；內建交付、migration 與真實 Agent 驗證尚未完成。
+2026-10-10 完成 MM-02 namespace／worker 路由、MM-03 主控交接、MM-04 獨立整合／combined verification 及 MM-05 共用本地交付 gate，證據見 [MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05 validation](reviews/MM-05-validation.md)；MM-01 設計證據見 [contract review](reviews/MM-01-contract-review.md)。下一步為 MM-06 migration。V2 為分階段實作；migration、整體組合驗證與真實 Agent 驗證尚未完成。

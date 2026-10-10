@@ -60,6 +60,10 @@ class Namespace:
         return "manager/" + self.key + "/" + self.identity + "/tasks/" + task
 
     @property
+    def integration_branch(self):
+        return "manager/" + self.key + "/" + self.identity + "/integration"
+
+    @property
     def session(self):
         return "manager-" + self.key + "-" + self.identity
 

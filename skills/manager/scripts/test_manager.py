@@ -673,18 +673,18 @@ class ManagerTests(unittest.TestCase):
         self.credentials["alpha"] = credential
         return result
 
-    def start_verify(self):
+    def start_verify(self, action=None):
         started, finish = self.directory / "started", self.directory / "finish"
         code = ("from pathlib import Path; import time, os; "
                 "assert 'MANAGER_OWNER_FILE' not in os.environ; "
                 "Path(" + repr(str(started)) + ").write_text('ready'); "
-                "deadline=time.monotonic()+15\n"
+                "deadline=time.monotonic()+30\n"
                 "while not Path(" + repr(str(finish)) + ").exists():\n"
                 " assert time.monotonic()<deadline; time.sleep(.02)\n")
         command = shlex.join([sys.executable, "-c", code])
         process = subprocess.Popen([sys.executable, str(CLI), "--root", str(self.root),
                                    "--manager-id", "alpha", "--owner-file", str(self.credentials["alpha"]),
-                                   "verify", "T001", "--review", str(self.review), "--command", command],
+                                   *(action or ["verify", "T001"]), "--review", str(self.review), "--command", command],
                                   env=dict(self.env, MANAGER_OWNER_FILE=str(self.credentials["alpha"])),
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def cleanup():
@@ -986,6 +986,430 @@ class ManagerTests(unittest.TestCase):
         self.assertIsNone(state["verification"])
         self.call("accept", "T001", ok=False)
         self.verify()
+
+    def accepted_source(self, identity="T001", manager="alpha", dirty=False):
+        item = self.spawn(identity, manager=manager)
+        tree = Path(item["worktree"])
+        (tree / "base.txt").write_text(manager + " accepted change\n")
+        if dirty:
+            (tree / "notes.txt").write_text("Reviewed task-owned untracked artifact\n")
+        else:
+            self.git("add", "base.txt", root=tree)
+            self.git("commit", "-qm", "Accepted fixture change", root=tree)
+        self.worker_done(identity, manager=manager)
+        self.verify(identity, manager=manager)
+        self.call("accept", identity, manager=manager)
+        return item
+
+    def integration_fixture(self, manager="alpha", dirty=False):
+        source = self.accepted_source(manager=manager, dirty=dirty)
+        base = self.git("rev-parse", "HEAD")
+        self.git("branch", "release-" + manager, base)
+        record = self.call("integration", "init", "--base", base, manager=manager)
+        tree = Path(record["worktree"])
+        if dirty:
+            for filename in ("base.txt", "notes.txt"):
+                (tree / filename).write_bytes((Path(source["worktree"]) / filename).read_bytes())
+            self.git("add", "base.txt", "notes.txt", root=tree)
+            self.git("commit", "-qm", "Integrate reviewed dirty artifacts", root=tree)
+        else:
+            self.git("cherry-pick", source["branch"], root=tree)
+        return source, record
+
+    def combined_verify(self, manager="alpha", command="test -f base.txt", ok=True, sources=None, target=None, timeout=600):
+        args = ["integration", "verify", "--target", target or "refs/heads/release-" + manager,
+                "--review", str(self.review), "--command", command, "--timeout", str(timeout)]
+        for identity in sources or ["T001"]:
+            args += ["--source", identity]
+        return self.call(*args, manager=manager, ok=ok)
+
+    def test_integration_parallel_init_and_resume_preserve_dirty_checkout(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.create_manager("beta")
+        base = self.git("rev-parse", "HEAD")
+        (self.root / "base.txt").write_text("user staged version\n")
+        self.git("add", "base.txt")
+        (self.root / "base.txt").write_text("user working version\n")
+        (self.root / "user-untracked.txt").write_text("keep\n")
+        index = (self.root / ".git/index").read_bytes()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            records = list(pool.map(lambda m: self.call("integration", "init", "--base", base, manager=m), ("alpha", "beta")))
+        self.assertNotEqual(records[0]["branch"], records[1]["branch"])
+        for record in records:
+            self.assertEqual(self.git("rev-parse", "HEAD", root=Path(record["worktree"])), base)
+            self.assertEqual((Path(record["worktree"]) / "base.txt").read_text(), "original\n")
+        before = self.snapshot(self.home)
+        self.assertFalse(self.call("integration", "init", "--base", base)["initialized"])
+        self.assertEqual(self.snapshot(self.home), before)
+        other = self.git("commit-tree", self.git("rev-parse", "HEAD^{tree}"), "-p", base, "-m", "different base")
+        self.call("integration", "init", "--base", other, ok=False)
+        self.assertEqual(self.snapshot(self.home), before)
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        self.assertEqual(self.git("rev-parse", "HEAD"), base)
+        self.assertEqual((self.root / "base.txt").read_text(), "user working version\n")
+        self.assertEqual((self.root / "user-untracked.txt").read_text(), "keep\n")
+        self.assertEqual(self.call("reconcile")["orphan_worktrees"], [])
+
+    def test_integration_dirty_accepted_source_is_copied_without_mutation(self):
+        (self.root / "base.txt").write_text("user work stays here\n")
+        index = (self.root / ".git/index").read_bytes()
+        source, integration = self.integration_fixture(dirty=True)
+        source_before = self.snapshot(Path(source["worktree"]))
+        proof = self.combined_verify(command="test -f notes.txt && grep -q alpha base.txt")
+        status = self.call("integration", "status")
+        self.assertTrue(status["eligible"])
+        self.assertEqual(status["verification_id"], proof["id"])
+        accepted = proof["snapshot"]["sources"][0]
+        self.assertEqual(accepted["verification_id"], self.state()["verification"]["id"])
+        self.assertEqual(self.snapshot(Path(source["worktree"])), source_before)
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        self.assertEqual((self.root / "base.txt").read_text(), "user work stays here\n")
+        self.assertEqual(self.git("rev-parse", "refs/heads/release-alpha"), integration["base"])
+        self.assertNotEqual(proof["snapshot"]["candidate"]["oid"], integration["base"])
+
+    def test_integration_committed_base_reaches_dependent_worker_and_multiple_sources(self):
+        first, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        second = self.spawn("T002", depends_on="T001", base=integration["branch"])
+        worker = Path(second["worktree"])
+        self.assertEqual((worker / "base.txt").read_text(), "alpha accepted change\n")
+        (worker / "dependent.txt").write_text("Uses accepted first source\n")
+        self.git("add", "dependent.txt", root=worker)
+        self.git("commit", "-qm", "Dependent fixture", root=worker)
+        self.worker_done("T002")
+        self.verify("T002")
+        self.call("accept", "T002")
+        self.git("cherry-pick", second["branch"], root=tree)
+        record = self.combined_verify(sources=["T002", "T001"], command="test -f dependent.txt && grep -q alpha base.txt")
+        self.assertEqual([s["task_id"] for s in record["snapshot"]["sources"]], ["T001", "T002"])
+        self.assertTrue(self.call("integration", "status")["eligible"])
+        self.combined_verify(sources=["T001", "T001"], ok=False)
+        self.combined_verify(sources=["missing"], ok=False)
+
+    def test_integration_requires_current_acceptance_and_same_manager_evidence(self):
+        source, integration = self.integration_fixture()
+        state_path = self.home / "state.json"
+        original = state_path.read_bytes()
+        for eligibility in ("unaccepted", "reverify_required"):
+            state = json.loads(original)
+            state["tasks"]["T001"]["acceptance_eligibility"] = eligibility
+            state_path.write_text(json.dumps(state))
+            self.combined_verify(ok=False)
+        state_path.write_bytes(original)
+        accepted_path = self.home / "tasks/T001/accepted.json"
+        original_accepted = accepted_path.read_bytes()
+        accepted = json.loads(original_accepted)
+        accepted["manager_id"] = "beta"
+        accepted_path.write_text(json.dumps(accepted))
+        self.combined_verify(ok=False)
+        accepted_path.write_bytes(original_accepted)
+        source_review = self.home / self.state()["verification"]["review"]
+        source_review.write_text("Modified source review")
+        self.combined_verify(ok=False)
+
+    def test_integration_candidate_source_review_and_record_edits_invalidate_proof(self):
+        source, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        proof = self.combined_verify()
+        for path, replacement in ((Path(source["worktree"]) / "base.txt", b"accepted source mutated\n"),
+                                  (self.home / proof["review"], b"combined review mutated\n")):
+            original = path.read_bytes()
+            path.write_bytes(replacement)
+            self.assertFalse(self.call("integration", "status")["eligible"])
+            self.assertEqual(self.call("integration", "status")["verification_id"], proof["id"])
+            path.write_bytes(original)
+        proof_path = self.home / "integration-verification" / proof["id"] / "record.json"
+        original = proof_path.read_bytes()
+        mutated = json.loads(original)
+        mutated["checks"][0]["command"] = "unreviewed replacement"
+        proof_path.write_text(json.dumps(mutated))
+        self.assertFalse(self.call("integration", "status")["eligible"])
+        proof_path.write_bytes(original)
+        (tree / "new.txt").write_text("candidate untracked change\n")
+        self.assertFalse(self.call("integration", "status")["eligible"])
+        self.git("add", "new.txt", root=tree)
+        self.git("commit", "-qm", "Candidate advanced", root=tree)
+        self.assertFalse(self.call("integration", "status")["eligible"])
+        fresh = self.combined_verify()
+        self.assertNotEqual(fresh["id"], proof["id"])
+        self.assertFalse(self.call("integration", "status", "--verification", proof["id"])["eligible"])
+        self.assertTrue(self.call("integration", "status")["eligible"])
+
+    def test_integration_target_types_ancestry_and_stale_oid(self):
+        source, integration = self.integration_fixture()
+        main = self.git("symbolic-ref", "HEAD")
+        main_oid = self.git("rev-parse", "HEAD")
+        self.combined_verify(target=main)  # Preparation is allowed; checkout inventory belongs to delivery.
+        self.assertEqual(self.git("rev-parse", "HEAD"), main_oid)
+        proof = self.combined_verify()
+        candidate = proof["snapshot"]["candidate"]["oid"]
+        self.git("update-ref", "refs/heads/release-alpha", candidate, integration["base"])
+        self.assertFalse(self.call("integration", "status")["eligible"])
+        fresh = self.combined_verify()
+        self.assertEqual(fresh["snapshot"]["target"]["oid"], candidate)
+        self.git("symbolic-ref", "refs/heads/symbolic-release", "refs/heads/release-alpha")
+        self.git("tag", "tag-release", candidate)
+        unrelated = self.git("commit-tree", self.git("rev-parse", "HEAD^{tree}"), "-m", "unrelated root")
+        self.git("branch", "unrelated-release", unrelated)
+        for ref in ("release-alpha", "refs/tags/tag-release", "refs/remotes/origin/main", "refs/heads/missing",
+                    "refs/heads/symbolic-release", "refs/heads/" + integration["branch"], "refs/heads/unrelated-release"):
+            self.combined_verify(target=ref, ok=False)
+        self.assertEqual(self.git("rev-parse", "refs/heads/release-alpha"), candidate)
+
+    def test_integration_rejects_dirty_staged_untracked_and_git_operation(self):
+        source, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        (tree / "base.txt").write_text("dirty\n")
+        self.combined_verify(ok=False)
+        self.git("add", "base.txt", root=tree)
+        self.combined_verify(ok=False)
+        self.git("restore", "--staged", "--worktree", "base.txt", root=tree)
+        untracked = tree / "new.txt"
+        untracked.write_text("untracked\n")
+        self.combined_verify(ok=False)
+        untracked.unlink()
+        marker = Path(self.git("rev-parse", "--git-path", "CHERRY_PICK_HEAD", root=tree))
+        marker.write_text(self.git("rev-parse", "HEAD", root=tree))
+        self.combined_verify(ok=False)
+        marker.unlink()
+        self.combined_verify()
+
+    def test_integration_submodule_dirty_untracked_uninitialized_and_revision_rejected(self):
+        source, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        module = self.directory / "module-repo"
+        module.mkdir()
+        self.git("init", "-q", root=module)
+        self.git("config", "user.name", "Fixture", root=module)
+        self.git("config", "user.email", "fixture@example.invalid", root=module)
+        (module / "module.txt").write_text("submodule baseline\n")
+        self.git("add", "module.txt", root=module)
+        self.git("commit", "-qm", "Module baseline", root=module)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", str(module), "module", root=tree)
+        self.git("commit", "-qm", "Combined candidate with submodule", root=tree)
+        self.combined_verify()
+        child = tree / "module"
+        (child / "module.txt").write_text("nested dirty\n")
+        self.combined_verify(ok=False)
+        self.git("restore", "module.txt", root=child)
+        (child / "untracked.txt").write_text("nested untracked\n")
+        self.combined_verify(ok=False)
+        (child / "untracked.txt").unlink()
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Module advanced", root=child)
+        self.combined_verify(ok=False)
+        self.git("-c", "protocol.file.allow=always", "submodule", "update", root=tree)
+        self.combined_verify()
+        self.git("submodule", "deinit", "-f", "module", root=tree)
+        self.combined_verify(ok=False)
+
+    def test_integration_two_managers_verify_without_cross_writes(self):
+        self.create_manager("beta")
+        alpha_source, alpha = self.integration_fixture()
+        beta_source, beta = self.integration_fixture(manager="beta")
+        before = self.snapshot(self.root / ".manager/beta")
+        a = self.combined_verify(command="grep -q alpha base.txt")
+        self.assertEqual(self.snapshot(self.root / ".manager/beta"), before)
+        before = self.snapshot(self.home)
+        b = self.combined_verify(manager="beta", command="grep -q beta base.txt")
+        self.assertEqual(self.snapshot(self.home), before)
+        self.assertNotEqual(a["snapshot"]["candidate"]["ref"], b["snapshot"]["candidate"]["ref"])
+        self.assertTrue(self.call("integration", "status", manager="beta")["eligible"])
+        self.assertTrue(self.call("integration", "status")["eligible"])
+
+    def test_integration_long_checks_allow_other_work_and_fence_takeover(self):
+        source, integration = self.integration_fixture()
+        self.create_manager("beta")
+        process, finish = self.start_verify(action=["integration", "verify", "--target", "refs/heads/release-alpha", "--source", "T001"])
+        self.assertIn("busy", self.call("integration", "init", "--base", integration["base"], ok=False)["error"].lower())
+        self.assertIn("busy", self.combined_verify(ok=False)["error"].lower())
+        observed = self.call("reconcile")
+        self.assertIn({"resource": "integration", "issue": "operation_busy"}, observed["notices"])
+        self.assertEqual(self.call("owner", "status")["pending_operations"][0]["resource"], "integration")
+        self.takeover()
+        task = self.spawn("T002", base=integration["branch"])
+        self.call("report", "T002", "--attempt", "1", "--state", "working", "--summary", "Reporting during combined checks")
+        self.assertEqual((Path(task["worktree"]) / "base.txt").read_text(), "alpha accepted change\n")
+        # Another manager can create a worktree and verify while alpha checks hold no common lock.
+        self.integration_fixture(manager="beta")
+        self.combined_verify(manager="beta")
+        record = self.finish_verify(process, finish, passed=False)
+        self.assertEqual(record["outcome"], "fenced")
+        self.assertIsNone(self.call("integration", "status")["verification_id"])
+        self.call("reconcile")
+        self.assertEqual(self.call("owner", "status")["pending_operations"], [])
+        self.assertIn("T002", json.loads((self.home / "state.json").read_text())["tasks"])
+        fresh = self.combined_verify()
+        self.assertTrue(self.call("integration", "status")["eligible"])
+        self.assertFalse(self.call("integration", "status", "--verification", record["id"])["eligible"])
+
+    def test_integration_long_checks_detect_target_and_review_changes(self):
+        source, integration = self.integration_fixture()
+        for change in ("target", "review"):
+            for filename in ("started", "finish"):
+                (self.directory / filename).unlink(missing_ok=True)
+            process, finish = self.start_verify(action=["integration", "verify", "--target", "refs/heads/release-alpha", "--source", "T001"])
+            if change == "target":
+                head = self.git("rev-parse", "HEAD", root=Path(integration["worktree"]))
+                self.git("update-ref", "refs/heads/release-alpha", head)
+            else:
+                operation = self.call("owner", "status")["pending_operations"][0]
+                (self.home / "integration-verification" / operation["id"] / "review.md").write_text("Changed copied review")
+            record = self.finish_verify(process, finish, passed=False)
+            self.assertEqual(record["outcome"], "snapshot_changed")
+            self.assertIsNone(self.call("integration", "status")["verification_id"])
+
+    def test_integration_failed_checks_timeout_and_interruption_never_restore_success(self):
+        source, integration = self.integration_fixture()
+        self.assertEqual(self.combined_verify(command="exit 7", ok=False)["outcome"], "failed")
+        timeout = self.combined_verify(command="sleep 3", timeout=1, ok=False)
+        self.assertTrue(timeout["checks"][0]["timed_out"])
+        process, finish = self.start_verify(action=["integration", "verify", "--target", "refs/heads/release-alpha", "--source", "T001"])
+        process.kill()
+        process.communicate(timeout=5)
+        finish.touch()  # Check children are quiesced separately from runtime advisory-lock release.
+        recovered = self.call("reconcile")["integration"]
+        self.assertEqual(recovered["operation"]["state"], "interrupted")
+        self.assertTrue(recovered["operation"]["snapshot_matches"])
+        self.assertFalse(recovered["eligible"])
+        self.combined_verify()
+
+    def test_integration_proof_survives_takeover_and_read_commands_do_not_write(self):
+        before = self.snapshot(self.home)
+        self.assertFalse(self.call("integration", "status", owner=False)["initialized"])
+        self.assertEqual(self.snapshot(self.home), before)
+        self.integration_fixture()
+        proof = self.combined_verify()
+        self.takeover()
+        before = self.snapshot(self.home)
+        self.assertTrue(self.call("integration", "status", owner=False)["eligible"])
+        self.assertTrue(self.call("integration", "status", "--verification", proof["id"], owner=False)["eligible"])
+        self.assertTrue(self.call("status", owner=False)["integration"]["eligible"])
+        self.call("owner", "status", owner=False)
+        self.assertEqual(self.snapshot(self.home), before)
+        self.spawn("T002")
+        self.call("integration", "status", env=self.worker_env("alpha", "T002"), owner=False, ok=False)
+
+    def test_integration_init_recovers_completed_git_side_effect_without_reset(self):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        base = self.git("rev-parse", "HEAD")
+        args = argparse.Namespace(base=base, owner_file=str(self.credentials["alpha"]))
+        original = module.atomic_json
+        def crash_before_ready(path, value):
+            if path.name == "integration.json" and value["state"] == "ready":
+                raise OSError("fixture crash after worktree creation")
+            original(path, value)
+        with mock.patch.object(module, "atomic_json", side_effect=crash_before_ready):
+            with self.assertRaises(OSError):
+                runtime.integration_init(args)
+        status = self.call("integration", "status", owner=False)
+        self.assertFalse(status["initialized"])
+        tree = self.home / "integration"
+        self.assertTrue(tree.is_dir())
+        (tree / "local.txt").write_text("Do not reset interrupted work\n")
+        self.call("integration", "init", "--base", base, ok=False)
+        self.assertEqual((tree / "local.txt").read_text(), "Do not reset interrupted work\n")
+        (tree / "local.txt").unlink()
+        resumed = self.call("integration", "init", "--base", base)
+        self.assertTrue(resumed["initialized"])
+        self.assertEqual(self.git("rev-parse", "HEAD", root=tree), base)
+
+    def test_integration_unknown_refs_paths_and_identity_are_preserved(self):
+        base = self.git("rev-parse", "HEAD")
+        key = hashlib.sha256(str(self.root).encode()).hexdigest()[:12]
+        branch = "manager/" + key + "/alpha/integration"
+        self.git("branch", branch, base)
+        self.call("integration", "init", "--base", base, ok=False)
+        self.assertFalse((self.home / "integration.json").exists())
+        self.assertEqual(self.git("rev-parse", branch), base)
+        self.git("branch", "-d", branch)  # Fixture-owned ref only.
+        outside = self.directory / "outside-integration"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("retained\n")
+        (self.home / "integration").symlink_to(outside)
+        self.call("integration", "init", "--base", base, ok=False)
+        self.assertEqual((outside / "keep.txt").read_text(), "retained\n")
+        (self.home / "integration").unlink()
+        record = self.call("integration", "init", "--base", base)
+        tree = Path(record["worktree"])
+        self.git("checkout", "-qb", "foreign-integration", root=tree)
+        self.call("integration", "init", "--base", base, ok=False)
+        self.assertIn("mismatch", self.call("integration", "status")["diagnostic_error"].lower())
+        self.assertEqual(self.git("branch", "--show-current", root=tree), "foreign-integration")
+
+    def test_integration_real_conflict_must_be_resolved_before_combined_checks(self):
+        source, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        second = self.spawn("T002")
+        worker = Path(second["worktree"])
+        (worker / "base.txt").write_text("second accepted change\n")
+        self.git("add", "base.txt", root=worker)
+        self.git("commit", "-qm", "Conflicting source", root=worker)
+        self.worker_done("T002")
+        self.verify("T002")
+        self.call("accept", "T002")
+        sources_before = [self.snapshot(Path(t["worktree"])) for t in (source, second)]
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.git("cherry-pick", second["branch"], root=tree)
+        self.combined_verify(sources=["T001", "T002"], ok=False)
+        (tree / "base.txt").write_text("alpha accepted change\nsecond accepted change\n")
+        self.git("add", "base.txt", root=tree)
+        self.git("cherry-pick", "--continue", root=tree)
+        self.combined_verify(sources=["T001", "T002"], command="grep -q alpha base.txt && grep -q second base.txt")
+        self.assertEqual([self.snapshot(Path(t["worktree"])) for t in (source, second)], sources_before)
+
+    def test_integration_checks_mutating_candidate_or_source_cannot_qualify(self):
+        source, integration = self.integration_fixture()
+        record = self.combined_verify(command="echo mutation >> base.txt", ok=False)
+        self.assertEqual(record["outcome"], "snapshot_changed")
+        self.assertEqual(record["checks"][0]["exit_code"], 0)
+        self.git("restore", "base.txt", root=Path(integration["worktree"]))
+        command = "echo mutation >> " + shlex.quote(str(Path(source["worktree"]) / "base.txt"))
+        record = self.combined_verify(command=command, ok=False)
+        self.assertEqual(record["outcome"], "snapshot_changed")
+        self.assertIsNone(self.call("integration", "status")["verification_id"])
+        self.call("spawn", "--id", "T002", "--title", "dependent", "--brief", str(self.brief),
+                  "--depends-on", "T001", "--base", integration["branch"], ok=False)
+        self.assertFalse((self.home / "worktrees/T002").exists())
+
+    def test_integration_ignored_cache_output_does_not_dirty_committed_candidate(self):
+        source, integration = self.integration_fixture()
+        tree = Path(integration["worktree"])
+        (tree / ".gitignore").write_text("cache/\n")
+        self.git("add", ".gitignore", root=tree)
+        self.git("commit", "-qm", "Reviewed cache ignore", root=tree)
+        record = self.combined_verify(command="mkdir -p cache && echo generated > cache/test.log")
+        self.assertEqual(record["outcome"], "passed")
+        self.assertTrue(self.call("integration", "status")["eligible"])
+
+    def test_integration_passed_record_before_metadata_commit_never_restores_eligibility(self):
+        self.integration_fixture()
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "alpha")
+        runtime.load()
+        args = argparse.Namespace(owner_file=str(self.credentials["alpha"]), source=["T001"],
+                                  target="refs/heads/release-alpha", review=str(self.review), command=["true"], timeout=10)
+        original = module.atomic_json
+        def fail_current_commit(path, value):
+            if path.name == "integration.json" and value.get("verification"):
+                raise OSError("fixture crash after passed record, before owner qualification commit")
+            original(path, value)
+        with module.lock(self.home / ".integration.operation.lock", nonblocking=True):
+            with mock.patch.object(module, "atomic_json", side_effect=fail_current_commit):
+                with self.assertRaises(OSError):
+                    runtime.integration_verify(args)
+        status = self.call("integration", "status")
+        identity = status["operation"]["id"]
+        record_path = self.home / "integration-verification" / identity / "record.json"
+        self.assertTrue(json.loads(record_path.read_text())["passed"])
+        self.assertFalse(self.call("integration", "status", "--verification", identity)["eligible"])
+        recovered = self.call("reconcile")["integration"]
+        self.assertEqual(recovered["operation"]["state"], "interrupted")
+        self.assertFalse(self.call("integration", "status", "--verification", identity)["eligible"])
+        self.combined_verify()
+        self.assertTrue(self.call("integration", "status")["eligible"])
+        self.assertFalse(self.call("integration", "status", "--verification", identity)["eligible"])
 
     @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
     def test_real_interactive_worker_receives_message(self):

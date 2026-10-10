@@ -2,7 +2,7 @@
 
 最後更新：2026-10-10。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-10 完成 MM-02 namespace／路由及 MM-03 主控交接／長操作 fencing，SPEC-001 為 Implementing；下一步 MM-04。MM-04–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
+2026-10-10 完成 MM-02 namespace／路由、MM-03 主控交接及 MM-04 獨立整合／combined evidence，SPEC-001 為 Implementing；下一步 MM-05。MM-05–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -12,7 +12,7 @@
 | MM-01 | 收斂多 manager 的介面與未決契約 | Done | DOC-01 | SPEC-001 Q-01–Q-04；ADR-0002–0004 |
 | MM-02 | Manager selector、namespace 與 worker 路由 | Done | MM-01 | SPEC-001 §3–5；ADR-0002 |
 | MM-03 | 同 ID 主控所有權與交接 | Done | MM-02 | SPEC-001 §6；ADR-0002 |
-| MM-04 | 每 manager 的整合工作樹與證據 | Todo | MM-02 | SPEC-001 §7.1；ADR-0003 |
+| MM-04 | 每 manager 的整合工作樹與證據 | Done | MM-02、MM-03 | SPEC-001 §7.1；ADR-0003 |
 | MM-05 | Repository 共用交付 gate | Todo | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
 | MM-06 | v1 → v2 migration 與中斷恢復 | Todo | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
 | MM-07 | Skill／protocol／reference 同步與整體驗證 | Todo | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
@@ -64,7 +64,9 @@ MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它�
 - 目標：從明確 base 建立 manager integration worktree，整合接受成果，保存 combined verification 與 target snapshot。
 - 完成條件：AC-07；manager A/B 與主 checkout 分離；使用者 dirty files 不被搬移／提交；依賴 base 含需要的成果。
 - 驗證：兩 manager 的獨立整合與衝突、dirty 主 checkout、candidate 在驗證後被修改的情境。
-- 證據／阻塞／接續：未開始；依賴 MM-02。
+- 結果：integration init/status/verify、明確 base／creation intent、current accepted source recheck、clean committed candidate／target ancestry、不可變 combined run／owner hash index、busy／fencing／中斷診斷完成；主 checkout／accepted task trees 保留。
+- 證據：[MM-04 validation](reviews/MM-04-validation.md)；最終預設 69 項（68 通過、1 real-only skip）、真實 tmux 69 項全通過，涵蓋 AC-07、真實衝突解決、submodules、來源／target／review／record 失效、proof commit 中斷及 read-only bytes/mtime。
+- 接續：MM-05；只有 combined evidence，不更新 target，不提供 deliver／自動 import/merge/push。真實 Agent／MM-08／MVP-02 仍未驗證。
 
 ### MM-05 — 共用交付 gate
 

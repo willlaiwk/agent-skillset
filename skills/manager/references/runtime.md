@@ -1,8 +1,8 @@
-# Runtime reference (v2 namespace and ownership, MM-03)
+# Runtime reference (v2 namespace, ownership and integration, MM-04)
 
 ## Current support
 
-The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Integration/delivery commands and migration are still pending. Do not use this version to migrate v1 data or claim that the complete multi-manager design is implemented.
+The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Isolated integration init/status/verify and combined evidence are available. Delivery commands and migration are still pending. Do not use this version to migrate v1 data or claim that the complete multi-manager design is implemented.
 
 Python 3.9+ and Git on a POSIX host are required. Starting workers additionally requires tmux and an installed, authenticated `codex` or `claude`. Default operation uses the Python standard library; YAML `.manager.yml` requires PyYAML in the same interpreter. JSON syntax in that file needs no additional dependency. Missing YAML support is an explicit error, never silently ignored.
 
@@ -111,7 +111,45 @@ Manager and worker state differ. Worker `done` is displayed in observed/reconcil
 
 `verify` requires a valid completion/result, a nonempty independent review, and at least one reviewed command (explicit or `.manager.yml`). Checks run in the task worktree with a per-command timeout (default 600 seconds); full logs/exit codes and before/after fingerprints cover HEAD, working/staged diffs, untracked files, report/result, and review. Nonzero exits, timeouts, or snapshot changes fail verification. Ignored cache output is excluded; submodule dirty contents are not deeply fingerprinted and require independent inspection.
 
-`accept` rechecks identity, attempt/assignment, snapshot and review, stops the matching worker, then checks for shutdown-time changes. This validates evidence consistency, not review quality. It accepts isolated task results only. Manager still owns integration under repository/user authorization, using a separate isolated delivery/integration tree and combined verification; dedicated integration/delivery CLI support is pending. Do not integrate concurrent managers into the user's shared checkout.
+`accept` rechecks identity, attempt/assignment, snapshot and review, stops the matching worker, then checks for shutdown-time changes. This validates evidence consistency, not review quality. It accepts isolated task results only. Manager still owns integration under repository/user authorization, using its dedicated integration tree and combined verification below. Delivery CLI support is pending. Do not integrate concurrent managers into the user's shared checkout.
+
+## Isolated integration and combined verification
+
+```sh
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  integration init --base COMMITTED_BASE
+# Integrate current accepted work in the returned tree using authorized Git commands.
+# Commit the reviewed candidate; retain the accepted source trees unchanged.
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  integration verify --target refs/heads/release --source T001 --source T002 \
+  --review /tmp/combined-review.md --command 'pnpm test' --command 'pnpm typecheck'
+manager --root /project --manager-id feature-login integration status
+manager --root /project --manager-id feature-login integration status --verification RUN_ID
+```
+
+`integration init` requires an explicit committed base and the active owner. It creates `.manager/{ID}/integration/` with branch `manager/{project-key}/{ID}/integration`, recording the resolved base/identity in `integration.json`. Repeating the same base checks identity and returns `initialized: false` without reset, checkout edits or a new initialization event. A different base, unregistered existing branch/tree, or foreign registration is rejected. Creation intent is durable before Git worktree creation; interrupted init resumes only if there are no side effects yet, or the matching tree/ref exists cleanly at the original base. Partial/changed side effects remain diagnostic. Main checkout dirty/staged/untracked files stay in place.
+
+The manager transfers reviewed accepted commits or task-owned dirty/untracked changes using normal repository tools under existing authorization, then deliberately commits the combined candidate. No runtime command automatically stages/imports/merges sources, resolves conflicts, pushes or updates a target. Dependent workers can use this committed integration branch as `spawn --base`; acceptance does not put source code in a later worker automatically. Dependency launch now rechecks accepted source evidence/fingerprint before creating its worktree.
+
+`integration verify` accepts one or more distinct same-manager current accepted task IDs, an independent nonempty review and reviewed check commands (explicit or shared verification configuration). It rechecks each source's attempt/assignment, accepted marker, verification record/review, HEAD and fingerprint; dirty accepted content is allowed only while that original snapshot is unchanged. Review must explain how sources map to the candidate: snapshot checks do not prove integration adequacy.
+
+Candidate must be committed and clean, including staged/untracked files and nested submodule content, with no merge/rebase/cherry-pick/revert/bisect/sequencer in progress. Submodules must be initialized at their committed revisions. Ignored caches may be generated by checks. Target must be an existing **full direct local branch ref**, outside manager/runtime/backup namespaces, and an ancestor of the candidate. Symbolic refs, tags, remote refs, missing refs and divergent targets fail. Verification can prepare against a checked-out branch without changing it; the final checkout inventory/ref-transaction gate belongs to MM-05 and will reject checked-out delivery targets.
+
+Control files stay outside the Git tree:
+
+```text
+.manager/{ID}/
+  .integration.operation.lock          nonblocking advisory resource lock
+  integration.json                    creation intent/base/identity/current run/hash index
+  integration/                        candidate Git worktree
+  integration-verification/{RUN_ID}/   operation.json, review.md, record.json, check logs
+```
+
+Combined checks hold only `.integration.operation.lock`; short registry/source report locks protect reservation and final snapshots. Common maintenance is held only for creation, never across checks. Other tasks/managers and worker reports can continue. Same-integration management fails busy; owner handoff remains possible. Finalization reloads current state and metadata, rechecks generation/token, operation ID/journal, candidate/target/source/review, and preserves concurrent task writes. Fenced or changed runs keep diagnostics and exit nonzero without current qualification.
+
+`integration status` is read-only and returns `eligible` for retained **evidence** after rechecking the committed record hash and current snapshots. It also appears under project `status.integration` and `reconcile.integration`. Changing candidate, target, source acceptance/content or review invalidates eligibility; an old run is not refreshed by recomputing its fingerprint. Completed unchanged evidence survives takeover. Failed checks/timeouts/interrupted runs never gain eligibility from their journal: the owner must complete a new verify. Reconcile skips a busy integration or, after acquiring its resource lock, checks the pending journal/snapshot and records interrupted/fenced diagnostics. Quiesce surviving check children separately before editing the tree; do not delete locks.
+
+`eligible: true` does not mean delivered or authorized to deliver. MM-05 still needs final owner/source/candidate/review/target/inventory checks and the common expected-OID transaction/receipt gate. This version provides no `deliver`, no external push/PR and no migration.
 
 ## Worker identity and messages
 

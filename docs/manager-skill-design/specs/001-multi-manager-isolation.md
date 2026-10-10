@@ -1,8 +1,8 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Implementing；MM-02 namespace／路由與 MM-03 主控交接／長操作 fencing 已完成，完整功能尚未完成。
+- 狀態：Implementing；MM-02 namespace／路由、MM-03 主控交接與 MM-04 獨立整合／combined evidence 已實作；完整功能尚未完成。
 - 建立：2026-10-08；更新：2026-10-10。
-- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；本輪工作樹含 MM-03。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md) 與 [MM-03 validation](../reviews/MM-03-validation.md)。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；本輪工作樹含 MM-04。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md) 與 [MM-04 validation](../reviews/MM-04-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
@@ -66,7 +66,7 @@ manager --root /project migrate --manager-id legacy --resume MIGRATION_ID --sour
 
 管理寫入使用 `--owner-file`，可由 `MANAGER_OWNER_FILE` 指定同一 credential 路徑；明確參數優先。Worker 不繼承這個環境變數／credential。`report` 的 `--assignment-id` 可由 launch environment 的 `MANAGER_WORKER_ASSIGNMENT` 提供，兩者同時提供時須一致；缺少時拒絕。
 
-Read commands 為 `managers`、`owner status`、`status`、`peek`、`events`、`inbox` 與 migration `--dry-run`：不建立目錄／鎖檔、不改 registry／events／ignore。`status` 回傳持久化狀態及分開的 observed 診斷；`peek` 可讀取 pane，但不保存 reconcile 結果。需要狀態更新時明確執行 owner-only `reconcile`。
+Read commands 為 `managers`、`owner status`、`integration status`、`status`、`peek`、`events`、`inbox` 與 migration `--dry-run`：不建立目錄／鎖檔、不改 registry／events／ignore。`status` 回傳持久化狀態及分開的 observed 診斷；`peek` 可讀取 pane，但不保存 reconcile 結果。需要狀態更新時明確執行 owner-only `reconcile`。
 
 只讀 Git 盤點使用 `GIT_OPTIONAL_LOCKS=0`，避免 status 等命令刷新 index 造成隱式寫入（[Git status background refresh](https://git-scm.com/docs/git-status#_background_refresh)）；不執行 prune/repair/fetch。跨檔案讀取遇到 concurrent write 時回傳明確 busy／inconsistent 診斷，不把讀到的部分資料當成完整成功狀態，也不為了修復一致性寫入資料。
 
@@ -95,6 +95,7 @@ Read commands 為 `managers`、`owner status`、`status`、`peek`、`events`、`
         history/             # migration 保存的 v1 原文
     worktrees/
       T001/
+    .integration.operation.lock # integration resource lock，位於 Git tree 外
     integration/             # 獨立 Git worktree，需要整合時建立
     integration.json         # base、來源與 worktree 身分
     integration-verification/
@@ -156,11 +157,15 @@ Common control 目錄固定為 `<canonical-git-common-dir>/manager-runtime/`。�
 
 ### 7.1 Manager 整合工作區
 
-`integration init --base REF` 將 REF 解析為明確 commit，建立專屬 integration branch/worktree 並記錄 base。已建立時只核對身分並回傳原資料；base 不同或 artifacts 不符時拒絕，不 reset。主 checkout 的未提交內容不能自動搬移、stash 或 commit。
+`integration init --base REF` 將必填 REF 解析為明確 commit，建立專屬 integration branch/worktree 並記錄 base。已建立時只核對身分並回傳原資料；base 不同或 artifacts 不符時拒絕，不 reset。主 checkout 的未提交內容不能自動搬移、stash 或 commit。
 
-Manager 依既有授權，在自己的 integration tree 使用 Git 整合已接受且目前 snapshot 仍相符的 task 成果。Task acceptance 可含 dirty 成果；Manager 將已 review 的 diff／task-owned untracked 成果帶入 integration tree 並刻意提交，保持 accepted task tree 原樣，不能自動 stage 使用者檔案。依賴 task 的 code 透過明確已提交 integration ref／base 傳給下一個 worker，不把 `done` 當 code 已存在。
+`integration.json` 使用 version 1 與完整 root／manager/resource identity，保存 initializing／ready、creation ID、branch/worktree/base、current verification、owner 提交的 run/hash index 與 pending operation。Git 建立前先寫 intent；中斷後只在尚無 side effect，或 matching registration/ref/tree 仍乾淨且停在 original base 時接續。Unknown ref/tree 或 changed partial artifacts 不採用／reset。Operation lock 固定放在 home `.integration.operation.lock`，避免 lock 檔被算成 candidate untracked 成果。
 
-`integration verify --target REF --source TASK --review FILE --command CMD` 保存不可變 run ID、target ref/OID、candidate ref/OID、source acceptance、review hash、combined commands/結果與 candidate snapshot。`--source` 可重複、至少一項且必須為同 manager 的 current accepted task；保存各 source attempt、accepted verification ID、HEAD 與 fingerprint，review 說明來源如何對應 candidate。Runtime 核對來源未改動，Manager 的 review 負責確認合併充分性。Target 必須為第 7.2 節允許的既有本地 ref；candidate 必須乾淨、無 staged/untracked 成果或進行中的 Git 操作，且 target OID 是 candidate 的 ancestor。Ignored cache 不當作交付內容；submodule 有 dirty/untracked 內容或不一致的 revision 時拒絕此版交付驗證。
+Manager 依既有授權，在自己的 integration tree 使用 Git 整合已接受且目前 snapshot 仍相符的 task 成果。Task acceptance 可含 dirty 成果；Manager 將已 review 的 diff／task-owned untracked 成果帶入 integration tree 並刻意提交，保持 accepted task tree 原樣，不能自動 stage 使用者檔案。依賴 launch 也重查 source verification／acceptance／fingerprint；來源改變時不得憑 current flag 啟動。依賴 task 的 code 透過明確已提交 integration ref／base 傳給下一個 worker，不把 `done` 當 code 已存在。
+
+`integration verify --target REF --source TASK --review FILE --command CMD` 保存不可變 run ID、target ref/OID、candidate ref/OID、source acceptance、review hash、combined commands/結果與 candidate snapshot。`--source` 可重複、至少一項且必須為同 manager 的 current accepted task；保存各 source attempt、accepted verification ID、HEAD 與 fingerprint，review 說明來源如何對應 candidate。Runtime 核對來源未改動，Manager 的 review 負責確認合併充分性。Target 必須為第 7.2 節定義的既有 full direct 本地分支 ref，拒絕 manager/runtime/backup namespace。Verify 可對已 checkout 的分支準備候選證據但不更新它；是否可交付的 worktree inventory 由 §7.2 final gate 重新核對，仍拒絕任何 checked-out target。candidate 必須乾淨、無 staged/untracked 成果或進行中的 Git 操作，且 target OID 是 candidate 的 ancestor。Ignored cache 不當作交付內容；submodule 有 dirty/untracked 內容或不一致的 revision 時拒絕此版交付驗證。
+
+`integration status [--verification ID]` 純讀查閱 metadata／pending operation，重新核對已提交的 run/hash index 與 candidate/target/source/review；eligible 僅代表 combined evidence 當前相符，並非已交付或新的授權。record 保存 passed 但 owner 尚未提交 index 的中斷 run 不取得資格；reconcile 在取得 integration operation lock、核對 journal/snapshot 後分類中斷，不從 journal 重建成功。
 
 Combined checks 在 integration tree、operation lock 下、common 鎖外執行，套用第 6.2 節收尾檢查；target 在 checks 期間變動則 run 不可交付。Source 成果改變、candidate 有變更、review 改變或指紋失效，須重新 review／verify，不能重算指紋沿用通過資格。
 
@@ -264,12 +269,13 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)；其餘 runtime 行為與 AC 仍待實作，不以契約定案或 fake provider 宣稱整體驗收。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-10 | MM-04：integration init/status/verify、source acceptance／combined snapshot／owner-committed hash index、隔離及中斷／fencing 驗證；clarify verify preparation 與 MM-05 checkout/delivery gate，尚未實作交付／migration／真實 Agent |
 | 2026-10-10 | MM-03：owner release/takeover、交接 journal／事件恢復、operation lock、鎖外 verify／generation fencing 與 AC-06 驗證完成；SPEC 維持 Implementing，MM-04–MM-08 與真實 Agent 驗證待後續 |
 | 2026-10-10 | MM-02：實作 namespace、完整 launch identity、純查閱與基本 claim 前置；補驗證證據，維持 Implementing，未完成 ownership handoff／integration／delivery／migration／真實 provider |
 | 2026-10-09 | MM-01：selector/schema、主控 API/fencing、首版本地交付 transaction、migration mapping/歷史/停止/續跑定案；狀態改 Ready，ADR-0002–0004 Accepted；無 runtime 修改 |

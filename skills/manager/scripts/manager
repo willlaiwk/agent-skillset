@@ -74,14 +74,19 @@ def git(root, *args):
     return run(["git", "-C", root, *args]).stdout.decode(errors="surrogateescape").strip()
 
 
-def read_json(path):
+def read_bytes(path):
     reject_symlinks(path)
+    content = path.read_bytes()
+    if READ_FILES is not None:
+        if path in READ_FILES and READ_FILES[path] != content:
+            raise Error("Runtime busy/inconsistent read: " + str(path))
+        READ_FILES[path] = content
+    return content
+
+
+def read_json(path):
     try:
-        content = path.read_bytes()
-        if READ_FILES is not None:
-            if path in READ_FILES and READ_FILES[path] != content:
-                raise Error("Runtime busy/inconsistent read: " + str(path))
-            READ_FILES[path] = content
+        content = read_bytes(path)
         value = json.loads(content)
         if not isinstance(value, dict):
             raise ValueError("expected an object")
@@ -221,6 +226,40 @@ def config(root):
     return result
 
 
+def run_checks(evidence, tree, commands, timeout, home):
+    checks = []
+    execution_error = None
+    try:
+        for index, command in enumerate(commands):
+            output = evidence / (str(index + 1) + ".log")
+            timed_out = False
+            with output.open("wb") as stream:
+                environment = dict(os.environ)
+                environment.pop("MANAGER_OWNER_FILE", None)
+                process = subprocess.Popen(command, shell=True, executable="/bin/sh",
+                                           cwd=tree, stdout=stream, env=environment,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+                try:
+                    code = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    code = 124
+                except BaseException:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    raise
+            checks.append({"command": command, "exit_code": code, "timed_out": timed_out,
+                           "log": str(output.relative_to(home))})
+    except (Error, OSError, ValueError) as exc:
+        execution_error = str(exc)
+    return checks, execution_error
+
+
 class Runtime:
     def __init__(self, root, identity=None, inventory=False):
         self.root = Path(git(Path(root).resolve(), "rev-parse", "--show-toplevel")).resolve()
@@ -235,6 +274,7 @@ class Runtime:
         self.control = self.namespace.control
         self.state = None
         self.busy_tasks = set()
+        self.integration_locked = False
         if self.home is None:
             return
         self.state_path = self.home / "state.json"
@@ -702,7 +742,7 @@ class Runtime:
             try:
                 diagnostic["snapshot_matches"] = (
                     self.fingerprint(item) == journal["fingerprint"] and
-                    hashlib.sha256((evidence / "review.md").read_bytes()).hexdigest() == journal["review_sha256"])
+                    hashlib.sha256(read_bytes(evidence / "review.md")).hexdigest() == journal["review_sha256"])
             except (Error, OSError, KeyError, ValueError) as exc:
                 diagnostic["diagnostic_error"] = str(exc)
             atomic_json(evidence / "operation.json", diagnostic)
@@ -719,6 +759,7 @@ class Runtime:
             if (self.task(identity)["state"] != "done" or
                     self.task(identity)["acceptance_eligibility"] != "current"):
                 raise Error("Dependency is not manager-accepted: " + identity)
+            self.source_snapshot(identity)
         settings = config(self.root)
         active = sum(not p["dead"] for name, p in self.panes().items() if name.startswith("mgr-"))
         if active >= settings["manager"]["max_workers"]:
@@ -999,7 +1040,7 @@ class Runtime:
                         digest.update(chunk)
         for filename in ("status.json", "result.md"):
             path = reject_symlinks(self.directory(item["task_id"]) / filename)
-            digest.update(path.read_bytes() if path.exists() else b"missing")
+            digest.update(read_bytes(path) if path.exists() else b"missing")
         return digest.hexdigest()
 
     def verify(self, args):
@@ -1046,36 +1087,7 @@ class Runtime:
             item.update(verification=None, operation=operation)
             self.save()
             self.touch_owner(args.owner_file)
-        checks = []
-        execution_error = None
-        try:
-            for index, command in enumerate(commands):
-                output = evidence / (str(index + 1) + ".log")
-                timed_out = False
-                with output.open("wb") as stream:
-                    environment = dict(os.environ)
-                    environment.pop("MANAGER_OWNER_FILE", None)
-                    process = subprocess.Popen(command, shell=True, executable="/bin/sh",
-                                               cwd=item["worktree"], stdout=stream, env=environment,
-                                               stderr=subprocess.STDOUT, start_new_session=True)
-                    try:
-                        code = process.wait(timeout=args.timeout)
-                    except subprocess.TimeoutExpired:
-                        timed_out = True
-                        os.killpg(process.pid, signal.SIGTERM)
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
-                            process.wait()
-                        code = 124
-                    except BaseException:
-                        os.killpg(process.pid, signal.SIGTERM)
-                        raise
-                checks.append({"command": command, "exit_code": code, "timed_out": timed_out,
-                               "log": str(output.relative_to(self.home))})
-        except (Error, OSError, ValueError) as exc:
-            execution_error = str(exc)
+        checks, execution_error = run_checks(evidence, item["worktree"], commands, args.timeout, self.home)
         with lock(self.home / ".lock"):
             self.load()  # Never write the start-time registry over another task's work.
             current = self.task(args.id)
@@ -1099,7 +1111,7 @@ class Runtime:
                                  current["assignment_id"] == operation["assignment_id"] and
                                  (current.get("operation") or {}).get("id") == identity and
                                  read_json(evidence / "operation.json") == operation and
-                                 hashlib.sha256((evidence / "review.md").read_bytes()).hexdigest() == review_hash)
+                                 hashlib.sha256(read_bytes(evidence / "review.md")).hexdigest() == review_hash)
                 except (Error, OSError, ValueError) as exc:
                     diagnostic_error = str(exc)
                     unchanged = False
@@ -1164,6 +1176,299 @@ class Runtime:
         intent = read_json(directory / "accept-intent.json")
         atomic_json(directory / "accept-intent.json", {**intent, "state": "committed"})
         return item
+
+    def integration_record(self):
+        path = reject_symlinks(self.home / "integration.json")
+        record = read_json(path)
+        if (record.get("version") != 1 or type(record.get("version")) is not int
+                or not self.namespace.matches(record) or record.get("resource") != "integration"
+                or record.get("state") not in ("initializing", "ready")
+                or record.get("branch") != self.namespace.integration_branch
+                or record.get("worktree") != str(self.home / "integration")
+                or not self.valid_assignment_id(record.get("creation_id"))
+                or not isinstance(record.get("base"), str)
+                or not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", record["base"])
+                or (record.get("verification") is not None and
+                    not self.valid_assignment_id(record["verification"]))
+                or (record.get("operation") is not None and not isinstance(record["operation"], dict))):
+            raise Error("Invalid integration identity or metadata; preserve and diagnose")
+        if (not isinstance(record.get("verifications"), dict) or
+                any(not self.valid_assignment_id(k) or not isinstance(v, str) or
+                    not re.fullmatch(r"[a-f0-9]{64}", v) for k, v in record["verifications"].items())):
+            raise Error("Invalid combined verification index; preserve and diagnose")
+        reject_symlinks(Path(record["worktree"]))
+        reject_symlinks(self.home / "integration-verification")
+        return record
+
+    def direct_commit(self, ref):
+        if run(["git", "-C", self.root, "symbolic-ref", "-q", ref], check=False).returncode == 0:
+            raise Error("Symbolic refs are not supported: " + ref)
+        return git(self.root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+
+    def integration_identity(self, record):
+        tree = Path(record["worktree"])
+        registration = self.worktrees().get(str(tree))
+        if (not tree.is_dir() or not registration or
+                registration.get("branch") != "refs/heads/" + record["branch"]):
+            raise Error("Integration worktree registration/branch mismatch; preserve and diagnose")
+        if (Path(git(tree, "rev-parse", "--show-toplevel")).resolve() != tree or
+                git(tree, "symbolic-ref", "-q", "HEAD") != "refs/heads/" + record["branch"]):
+            raise Error("Integration checkout identity mismatch")
+        common = Path(git(tree, "rev-parse", "--git-common-dir"))
+        if (common if common.is_absolute() else tree / common).resolve() != self.common:
+            raise Error("Integration worktree belongs to another repository")
+        return self.direct_commit("refs/heads/" + record["branch"])
+
+    def integration_init(self, args):
+        with lock(self.home / ".lock"):
+            self.load()
+            self.require_owner(args.owner_file)
+            self.repair_owner_events()
+            base = git(self.root, "rev-parse", "--verify", "--end-of-options", args.base + "^{commit}")
+            path = reject_symlinks(self.home / "integration.json")
+            tree = reject_symlinks(self.home / "integration")
+            ref = "refs/heads/" + self.namespace.integration_branch
+            if path.exists():
+                record = self.integration_record()
+                if record["base"] != base:
+                    raise Error("Integration already has a different base; never reset it")
+                if record["state"] == "ready":
+                    self.integration_identity(record)
+                    return {**record, "initialized": False}
+            else:
+                if tree.exists() or run(["git", "-C", self.root, "show-ref", "--verify", "--quiet", ref], check=False).returncode == 0:
+                    raise Error("Unregistered integration artifacts/ref exist; preserve and diagnose")
+                record = {**self.namespace.envelope(), "version": 1, "resource": "integration",
+                          "state": "initializing", "branch": self.namespace.integration_branch,
+                          "worktree": str(tree), "base": base, "created_at": now(),
+                          "creation_id": uuid.uuid4().hex, "verification": None, "operation": None,
+                          "verifications": {}}
+                atomic_json(path, record)  # Durable intent before shared Git metadata changes.
+            registrations = self.worktrees()
+            if str(tree) not in registrations:
+                if tree.exists() or run(["git", "-C", self.root, "show-ref", "--verify", "--quiet", ref], check=False).returncode == 0:
+                    raise Error("Partial integration creation is ambiguous; inspect preserved intent/ref/tree")
+                git(self.root, "worktree", "add", "-b", record["branch"], str(tree), base)
+            if self.integration_identity(record) != base or git(tree, "status", "--porcelain=v1", "--untracked-files=all"):
+                raise Error("Interrupted integration initialization changed; preserve and diagnose")
+            record["state"] = "ready"
+            atomic_json(path, record)
+            self.touch_owner(args.owner_file)
+            self.event(None, "integration.initialized", creation_id=record["creation_id"], base=base)
+            return {**record, "initialized": True}
+
+    def candidate_snapshot(self, record):
+        if record["state"] != "ready":
+            raise Error("Integration initialization pending; resume integration init with its recorded base")
+        head = self.integration_identity(record)
+        tree = Path(record["worktree"])
+        for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
+                       "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG"):
+            path = Path(git(tree, "rev-parse", "--git-path", marker))
+            if (path if path.is_absolute() else tree / path).exists():
+                raise Error("Integration has an in-progress Git operation: " + marker)
+        status = git(tree, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
+        if status:
+            raise Error("Integration candidate must be clean, including staged/untracked/submodule changes")
+        module_output = run(["git", "-C", tree, "submodule", "status", "--recursive"]).stdout.decode()
+        if any(line and line[0] in "-+U" for line in module_output.splitlines()):
+            raise Error("Integration submodules must be initialized at their committed revisions")
+        return {"ref": "refs/heads/" + record["branch"], "oid": head, "base": record["base"],
+                "worktree": record["worktree"], "submodules": module_output.strip()}
+
+    def target_snapshot(self, ref):
+        if (not ref.startswith("refs/heads/") or
+                any(ref == "refs/heads/" + name or ref.startswith("refs/heads/" + name + "/")
+                    for name in ("manager", "manager-runtime", "manager-backup")) or
+                run(["git", "check-ref-format", ref], check=False).returncode):
+            raise Error("Target must be an existing local branch outside manager/backup namespaces")
+        return {"ref": ref, "oid": self.direct_commit(ref)}
+
+    def source_snapshot(self, identity):
+        item = dict(self.task(identity))
+        record = item.get("verification")
+        if (item["state"] != "done" or item["acceptance_eligibility"] != "current"
+                or not isinstance(record, dict) or not record.get("passed")
+                or not self.namespace.matches(record, identity)
+                or not self.valid_assignment_id(record.get("id"))
+                or record.get("attempt") != item["attempt"]
+                or record.get("assignment_id") != item["assignment_id"]
+                or any(not isinstance(record.get(k), str) or not re.fullmatch(r"[a-f0-9]{64}", record[k])
+                       for k in ("fingerprint", "review_sha256"))):
+            raise Error("Source is not a current accepted task: " + identity)
+        directory = self.directory(identity)
+        expected_review = "tasks/" + identity + "/verification/" + record["id"] + "/review.md"
+        if record.get("review") != expected_review:
+            raise Error("Invalid source verification review path: " + identity)
+        accepted = read_json(directory / "accepted.json")
+        report = read_json(directory / "status.json")
+        assignment = self.assignment(identity)
+        for value in (accepted, report, assignment):
+            if (not self.namespace.matches(value, identity) or value.get("attempt") != item["attempt"]
+                    or value.get("assignment_id") != item["assignment_id"]):
+                raise Error("Source acceptance/report/assignment changed: " + identity)
+        if (accepted.get("verification_id") != record["id"] or report.get("state") != "done"
+                or read_json(directory / "verification" / record["id"] / "record.json") != record
+                or hashlib.sha256(read_bytes(self.home / expected_review)).hexdigest() != record["review_sha256"]):
+            raise Error("Source verification evidence changed: " + identity)
+        item["worktree_valid"] = (self.worktrees().get(item["worktree"], {}).get("branch") ==
+                                  "refs/heads/" + item["branch"] and Path(item["worktree"]).is_dir())
+        fingerprint = self.fingerprint(item)
+        if fingerprint != record["fingerprint"]:
+            raise Error("Accepted source snapshot changed; review and verify again: " + identity)
+        return {"task_id": identity, "attempt": item["attempt"], "assignment_id": item["assignment_id"],
+                "verification_id": record["id"], "head": git(item["worktree"], "rev-parse", "HEAD"),
+                "fingerprint": fingerprint, "acceptance": accepted}
+
+    def combined_snapshot(self, record, target, sources, report_locks=True):
+        candidate = self.candidate_snapshot(record)
+        destination = self.target_snapshot(target)
+        if run(["git", "-C", self.root, "merge-base", "--is-ancestor", destination["oid"], candidate["oid"]], check=False).returncode:
+            raise Error("Target must be an ancestor of the committed integration candidate")
+        with contextlib.ExitStack() as locks:
+            if report_locks:
+                for identity in sorted(sources):
+                    locks.enter_context(lock(self.directory(identity) / ".report.lock"))
+            accepted = [self.source_snapshot(identity) for identity in sorted(sources)]
+        return {"candidate": candidate, "target": destination, "sources": accepted}
+
+    def integration_verify(self, args):
+        if not args.source or len(args.source) != len(set(args.source)):
+            raise Error("Combined verification needs distinct current accepted --source tasks")
+        with lock(self.home / ".lock"):
+            self.load()
+            owner = self.require_owner(args.owner_file)
+            self.repair_owner_events()
+            self.recover_integration()
+            metadata = self.integration_record()
+            review = Path(args.review).read_text()
+            commands = args.command or list(config(self.root)["verification"].values())
+            if not review.strip() or not commands or any(not c.strip() for c in commands):
+                raise Error("Combined verification needs an independent review and reviewed check commands")
+            snapshot = self.combined_snapshot(metadata, args.target, args.source)
+            identity = uuid.uuid4().hex
+            evidence = self.home / "integration-verification" / identity
+            evidence.mkdir(parents=True)
+            atomic_text(evidence / "review.md", review)
+            operation = {**self.namespace.envelope(), "resource": "integration", "action": "verify",
+                         "id": identity, "state": "running", "generation": owner["generation"],
+                         "pid": os.getpid(), "started_at": now(), "snapshot": snapshot,
+                         "review_sha256": hashlib.sha256(review.encode()).hexdigest()}
+            atomic_json(evidence / "operation.json", operation)
+            metadata.update(operation=operation, verification=None, verification_sha256=None)
+            atomic_json(self.home / "integration.json", metadata)
+            self.touch_owner(args.owner_file)
+        checks, error = run_checks(evidence, metadata["worktree"], commands, args.timeout, self.home)
+        with lock(self.home / ".lock"):
+            self.load()
+            try:
+                fenced = self.require_owner(args.owner_file)["generation"] != owner["generation"]
+            except (Error, OSError, ValueError):
+                fenced = True
+            after = None
+            current = self.integration_record()
+            try:
+                after = self.combined_snapshot(current, args.target, args.source)
+                unchanged = (after == snapshot and (current.get("operation") or {}).get("id") == identity
+                             and read_json(evidence / "operation.json") == operation
+                             and hashlib.sha256(read_bytes(evidence / "review.md")).hexdigest() == operation["review_sha256"])
+            except (Error, OSError, ValueError, KeyError) as exc:
+                unchanged, error = False, str(exc)
+            passed = not fenced and unchanged and not error and all(c["exit_code"] == 0 for c in checks)
+            outcome = "fenced" if fenced else "snapshot_changed" if not unchanged else "passed" if passed else "failed"
+            record = {**self.namespace.envelope(), "version": 1, "resource": "integration", "id": identity,
+                      "at": now(), "generation": owner["generation"], "passed": passed, "outcome": outcome,
+                      "unchanged": unchanged, "snapshot": snapshot, "after_snapshot": after,
+                      "review": str((evidence / "review.md").relative_to(self.home)),
+                      "review_sha256": operation["review_sha256"], "checks": checks, "diagnostic_error": error}
+            atomic_json(evidence / "record.json", record)
+            finished = {**operation, "state": outcome, "finished_at": now()}
+            atomic_json(evidence / "operation.json", finished)
+            if not fenced and (current.get("operation") or {}).get("id") == identity:
+                current.update(operation=finished, verification=identity if passed else None,
+                               verification_sha256=hashlib.sha256(read_bytes(evidence / "record.json")).hexdigest() if passed else None)
+                if passed:
+                    current.setdefault("verifications", {})[identity] = current["verification_sha256"]
+                atomic_json(self.home / "integration.json", current)
+                self.touch_owner(args.owner_file)
+            self.event(None, "integration.verified", evidence=identity, passed=passed, outcome=outcome)
+            return record
+
+    def recover_integration(self):
+        if not (self.home / "integration.json").exists():
+            return
+        metadata = self.integration_record()
+        operation = metadata.get("operation")
+        if not operation or operation.get("state") != "running":
+            return
+        if (not self.namespace.matches(operation) or operation.get("resource") != "integration"
+                or operation.get("action") != "verify"
+                or not self.valid_assignment_id(operation.get("id"))):
+            raise Error("Invalid pending integration operation; preserve and diagnose")
+        evidence = self.home / "integration-verification" / operation["id"]
+        journal = read_json(evidence / "operation.json")
+        if (journal.get("id") != operation["id"] or not self.namespace.matches(journal)
+                or journal.get("resource") != "integration" or journal.get("action") != "verify"
+                or journal.get("generation") != operation.get("generation")
+                or journal.get("snapshot") != operation.get("snapshot")
+                or journal.get("state") not in ("running", "fenced", "snapshot_changed", "failed", "passed")):
+            raise Error("Integration operation journal mismatch")
+        diagnostic = {**journal, "state": journal["state"] if journal.get("state") in
+                      ("fenced", "snapshot_changed", "failed") else "interrupted",
+                      "recovered_at": now(), "snapshot_matches": None, "diagnostic_error": None}
+        try:
+            snapshot = journal["snapshot"]
+            diagnostic["snapshot_matches"] = (
+                self.combined_snapshot(metadata, snapshot["target"]["ref"], [s["task_id"] for s in snapshot["sources"]]) == snapshot
+                and hashlib.sha256(read_bytes(evidence / "review.md")).hexdigest() == journal["review_sha256"])
+        except (Error, OSError, ValueError, KeyError) as exc:
+            diagnostic["diagnostic_error"] = str(exc)
+        atomic_json(evidence / "operation.json", diagnostic)
+        metadata.update(operation=diagnostic, verification=None, verification_sha256=None)
+        atomic_json(self.home / "integration.json", metadata)
+        self.event(None, "integration.operation_interrupted", operation_id=operation["id"])
+
+    def integration_status(self, verification=None):
+        if not (self.home / "integration.json").exists():
+            return {**self.namespace.envelope(), "initialized": False, "eligible": False}
+        metadata = self.integration_record()
+        result = {**metadata, "initialized": metadata["state"] == "ready", "eligible": False,
+                  "verification_id": verification or metadata.get("verification"), "diagnostic_error": None}
+        if metadata["state"] != "ready":
+            result["diagnostic_error"] = "Integration initialization pending"
+            return result
+        try:
+            self.integration_identity(metadata)
+        except (Error, OSError, ValueError) as exc:
+            result["diagnostic_error"] = str(exc)
+            return result
+        identity = result["verification_id"]
+        if identity is None:
+            return result
+        if not self.valid_assignment_id(identity):
+            raise Error("Invalid combined verification ID")
+        evidence = self.home / "integration-verification" / identity
+        record = read_json(evidence / "record.json")
+        try:
+            if (not self.namespace.matches(record) or record.get("resource") != "integration"
+                    or record.get("id") != identity or not record.get("passed")
+                    or record.get("review") != "integration-verification/" + identity + "/review.md"
+                    or (metadata.get("operation") or {}).get("state") == "running"):
+                raise Error("Combined verification is unsuccessful or an operation is pending")
+            if hashlib.sha256(read_bytes(evidence / "record.json")).hexdigest() != metadata.get("verifications", {}).get(identity):
+                raise Error("Combined verification record changed")
+            snapshot = record["snapshot"]
+            current = self.combined_snapshot(metadata, snapshot["target"]["ref"], [s["task_id"] for s in snapshot["sources"]], report_locks=False)
+            if (current != snapshot or hashlib.sha256(read_bytes(evidence / "review.md")).hexdigest() != record["review_sha256"]):
+                raise Error("Combined candidate/target/source/review snapshot changed; verify again")
+            if READ_FILES is not None and current != self.combined_snapshot(
+                    metadata, snapshot["target"]["ref"], [s["task_id"] for s in snapshot["sources"]], report_locks=False):
+                raise Error("Runtime busy/inconsistent integration snapshot; retry")
+            result["eligible"] = True
+        except (Error, OSError, ValueError, KeyError) as exc:
+            result["diagnostic_error"] = str(exc)
+        result["record"] = record
+        return result
 
     def escalate(self, args):
         self.reconcile()
@@ -1237,6 +1542,18 @@ def parser():
     p = sub.add_parser("escalate")
     p.add_argument("id", type=task_id)
     p.add_argument("--reason", required=True)
+    p = sub.add_parser("integration")
+    integration = p.add_subparsers(dest="integration_action", required=True)
+    p = integration.add_parser("init")
+    p.add_argument("--base", required=True, help="Explicit committed integration base")
+    p = integration.add_parser("status")
+    p.add_argument("--verification", help="Check a specific retained combined verification")
+    p = integration.add_parser("verify")
+    p.add_argument("--target", required=True, help="Existing full local branch ref")
+    p.add_argument("--source", type=task_id, required=True, action="append")
+    p.add_argument("--review", required=True)
+    p.add_argument("--command", action="append")
+    p.add_argument("--timeout", type=int, default=600)
     return cli
 
 
@@ -1266,12 +1583,15 @@ def list_managers(root):
 
 def read_action(runtime, args):
     runtime.load()
+    if args.action == "integration":
+        return runtime.integration_status(args.verification)
     if args.action == "status":
         saved = json.loads(json.dumps(runtime.state))
         observed = runtime.reconcile(persist=False)
         return {"root": str(runtime.root), "manager_id": runtime.manager_id,
                 "tasks": list(saved["tasks"].values()), "observed": observed,
-                "worker_capacity": observed["worker_capacity"], "owner": runtime.owner_summary()}
+                "worker_capacity": observed["worker_capacity"], "owner": runtime.owner_summary(),
+                "integration": runtime.integration_status()}
     if args.action == "owner":
         result = runtime.owner_summary()
         result["owner_operations"] = [{"id": r["id"], "action": r["action"], "state": r["state"],
@@ -1281,6 +1601,10 @@ def read_action(runtime, args):
         result["pending_owner_operations"] = [r for r in result["owner_operations"] if r["state"] == "pending"]
         result["pending_operations"] = [t["operation"] for t in runtime.state["tasks"].values()
                                         if (t.get("operation") or {}).get("state") == "running"]
+        if (runtime.home / "integration.json").exists():
+            operation = runtime.integration_record().get("operation")
+            if operation and operation.get("state") == "running":
+                result["pending_operations"].append(operation)
         if args.owner_file:
             try:
                 runtime.require_owner(args.owner_file)
@@ -1316,7 +1640,8 @@ def main():
     global READ_FILES, READ_DIRS
     args = parser().parse_args()
     readonly = args.action in ("managers", "status", "peek", "events", "inbox") or (
-        args.action == "owner" and args.owner_action == "status")
+        args.action == "owner" and args.owner_action == "status") or (
+        args.action == "integration" and args.integration_action == "status")
     if readonly:
         READ_FILES, READ_DIRS = {}, {}
     try:
@@ -1371,6 +1696,17 @@ def main():
                             assignment["assignment_id"] != os.environ["MANAGER_WORKER_ASSIGNMENT"]):
                         raise Error("Stale worker inbox identity")
                 result = read_action(runtime, args)
+            elif args.action == "integration":
+                runtime.load()
+                runtime.require_owner(args.owner_file)
+                if args.integration_action == "verify" and args.timeout < 1:
+                    raise Error("--timeout must be positive")
+                with contextlib.ExitStack() as locks:
+                    if args.integration_action == "init":
+                        locks.enter_context(lock(runtime.control / "maintenance.lock"))
+                    locks.enter_context(lock(runtime.home / ".integration.operation.lock", nonblocking=True))
+                    runtime.integration_locked = True
+                    result = getattr(runtime, "integration_" + args.integration_action)(args)
             else:
                 if args.action == "send" and (args.message is None) == (args.message_file is None):
                     raise Error("Provide one message or --message-file")
@@ -1382,6 +1718,12 @@ def main():
                 with contextlib.ExitStack() as locks:
                     if args.action in ("spawn", "retry"):
                         locks.enter_context(lock(runtime.control / "maintenance.lock"))
+                    if args.action == "reconcile" and (runtime.home / "integration.json").exists():
+                        try:
+                            locks.enter_context(lock(runtime.home / ".integration.operation.lock", nonblocking=True))
+                            runtime.integration_locked = True
+                        except Error:
+                            pass  # Reconcile diagnoses busy integration without waiting.
                     known_tasks = set(runtime.state["tasks"])
                     if args.action != "owner":
                         target = getattr(args, "id", None)
@@ -1415,8 +1757,13 @@ def main():
                             if getattr(args, "id", None) in runtime.busy_tasks:
                                 raise Error("Task changed during lock acquisition; retry")
                             runtime.recover_operations()
+                            if runtime.integration_locked:
+                                runtime.recover_integration()
                             if args.action == "reconcile":
                                 result = runtime.reconcile()
+                                result["integration"] = runtime.integration_status()
+                                if not runtime.integration_locked and (runtime.home / "integration.json").exists():
+                                    result["notices"].append({"resource": "integration", "issue": "operation_busy"})
                             elif args.action in ("task", "spawn"):
                                 existing = args.id in runtime.state["tasks"]
                                 if existing and args.action == "task":
@@ -1432,7 +1779,8 @@ def main():
         if readonly:
             check_read_consistency()
         emit(result)
-        return 1 if args.action == "verify" and not result["passed"] else 0
+        checking = args.action == "verify" or (args.action == "integration" and args.integration_action == "verify")
+        return 1 if checking and not result["passed"] else 0
     except (Error, OSError, ValueError, argparse.ArgumentTypeError) as exc:
         emit({"error": str(exc)})
         return 1

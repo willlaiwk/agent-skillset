@@ -1762,6 +1762,490 @@ class ManagerTests(unittest.TestCase):
             self.call("deliver", "--verification", proof["id"], ok=False)
         self.assertEqual(self.git("rev-parse", "release-alpha"), proof["snapshot"]["target"]["oid"])
 
+    def legacy_fixture(self):
+        self.root = (self.directory / "legacy repo").resolve()
+        self.root.mkdir()
+        self.git("init", "-q")
+        self.git("config", "user.name", "Migration Fixture")
+        self.git("config", "user.email", "migration@example.invalid")
+        (self.root / "base.txt").write_text("legacy base\n")
+        (self.root / ".gitignore").write_text("cache/\n.manager/\n")
+        self.git("add", "base.txt", ".gitignore")
+        self.git("commit", "-qm", "Legacy base")
+        base = self.git("rev-parse", "HEAD")
+        key = hashlib.sha256(str(self.root).encode()).hexdigest()[:12]
+        source = self.root / ".manager"
+        source.mkdir()
+        (source / ".lock").touch()
+        for name in ("events", "inbox", "tasks", "worktrees"):
+            (source / name).mkdir()
+        (source / "plan.md").write_text("Historical plan with v1 report command and old paths.\n")
+        (source / "unknown-note.txt").write_text("Preserve unknown ordinary files.\n")
+        state = {"version": 1, "root": str(self.root), "session": "manager-" + key,
+                 "created_at": "2026-10-01T00:00:00+00:00", "tasks": {}}
+        for identity, attempt, task_state in (("T001", 1, "done"), ("T002", 2, "working"), ("T003", 0, "queued")):
+            branch = "manager/" + key + "/" + identity
+            tree = source / "worktrees" / identity
+            directory = source / "tasks" / identity
+            directory.mkdir()
+            (source / "inbox" / identity).mkdir()
+            (source / "events" / identity).mkdir()
+            item = {"task_id": identity, "title": "Legacy fixture", "kind": "implementation", "agent": "codex",
+                    "dependencies": ["T001"] if identity == "T003" else [], "base": base,
+                    "branch": branch, "worktree": str(tree), "window": "mgr-" + identity,
+                    "attempt": attempt, "state": task_state, "summary": "Legacy status", "pane": None,
+                    "accepted": "2026-10-01T00:00:00+00:00" if identity == "T001" else None,
+                    "verification": {"passed": True, "legacy": True} if identity == "T001" else None}
+            state["tasks"][identity] = item
+            (directory / "brief.md").write_text("Legacy report --root old-root, task " + identity + "\n")
+            (directory / "log.txt").write_text("Verbatim legacy log 紀錄\n")
+            report = {"task_id": identity, "attempt": attempt, "state": task_state,
+                      "summary": "Legacy report", "updated_at": "2026-10-01T00:00:00+00:00", "question": None, "acks": []}
+            if attempt:
+                (directory / ".report.lock").touch()
+                self.git("worktree", "add", "-b", branch, str(tree), base)
+                (directory / "assignment.json").write_text(json.dumps({"task_id": identity, "attempt": attempt,
+                    "root": str(self.root), "worktree": str(tree), "runtime": "legacy-manager", "auto_commit": True}))
+            if identity == "T001":
+                (tree / "base.txt").write_text("legacy committed change\n")
+                self.git("commit", "-qam", "Legacy accepted commit", root=tree)
+                (tree / "base.txt").write_text("legacy staged change\n")
+                (tree / "staged.txt").write_text("blob only in index\n")
+                self.git("add", "base.txt", "staged.txt", root=tree)
+                (tree / "base.txt").write_text("legacy unstaged change\n")
+                (tree / "notes.txt").write_text("legacy untracked\n")
+                (tree / "cache").mkdir()
+                (tree / "cache" / "output").write_text("legacy ignored cache\n")
+                (tree / "link").symlink_to("cache/output")
+                (tree / "notes.txt").chmod(0o755)
+                (directory / "result.md").write_text("Legacy accepted result.\n")
+                (directory / "accepted.json").write_text(json.dumps({"task_id": identity, "at": item["accepted"]}))
+                history_tree = self.git("rev-parse", "HEAD^{tree}", root=tree)
+                historical = subprocess.run(["git", "-C", str(self.root), "commit-tree", history_tree],
+                    input=b"Historical unreachable evidence commit\n", capture_output=True, check=True).stdout.decode().strip()
+                (directory / "old-proof.json").write_text(json.dumps({"head": historical, "passed": True}))
+                message = "a" * 32
+                report["acks"] = [message]
+                (source / "inbox" / identity / (message + ".json")).write_text(json.dumps({"message_id": message,
+                    "task_id": identity, "attempt": attempt, "text": "Historical correction", "delivery": "inbox"}))
+            if identity == "T002":
+                message = "b" * 32
+                history = directory / "history" / "attempt-1"
+                history.mkdir(parents=True)
+                (history / "status.json").write_text(json.dumps({"task_id": identity, "attempt": 1, "acks": [message]}))
+                (source / "inbox" / identity / (message + ".json")).write_text(json.dumps({"message_id": message,
+                    "task_id": identity, "attempt": 1, "text": "Earlier attempt correction"}))
+            (directory / "status.json").write_text(json.dumps(report))
+            (source / "events" / identity / (identity + ".json")).write_text(json.dumps({"type": "legacy.event", "task_id": identity}))
+        (source / "state.json").write_text(json.dumps(state))
+        self.home = source / "converted"
+        return source, state
+
+    def migrate(self, *args, ok=True):
+        return self.call("migrate", *args, manager="converted", owner=False, ok=ok)
+
+    def migration_runtime(self):
+        module = self.runtime_module()
+        runtime = module.Runtime(self.root, "converted", inventory=True)
+        return module, module.migration.Migration(runtime)
+
+    def migration_args(self, preview, resume=None):
+        return argparse.Namespace(dry_run=False, expect_source=preview["source_sha256"], source_quiesced=True, resume=resume)
+
+    def claim_migrated(self):
+        credential = self.directory / "converted.owner.json"
+        self.call("owner", "claim", "--session-id", "migration-test", "--credential-file", str(credential),
+                  manager="converted", owner=False)
+        self.credentials["converted"] = credential
+
+    def test_migration_dry_run_is_readonly_and_preserves_dirty_main_checkout(self):
+        source, state = self.legacy_fixture()
+        (self.root / "base.txt").write_text("user main dirty\n")
+        (self.root / "personal.txt").write_text("user main untracked\n")
+        before = self.snapshot(source), self.snapshot(self.root / ".git")
+        preview = self.migrate("--dry-run")
+        self.assertEqual(preview["blockers"], [])
+        self.assertEqual(before, (self.snapshot(source), self.snapshot(self.root / ".git")))
+        self.assertIn("unknown-note.txt", preview["inventory"]["unknown_artifacts"])
+        (self.root / "base.txt").write_text("unrelated user edit\n")
+        self.assertEqual(self.migrate("--dry-run")["source_sha256"], preview["source_sha256"])
+        self.assertFalse((self.root / ".git" / "manager-runtime").exists())
+
+    def test_migration_complete_preserves_content_index_history_and_objects(self):
+        source, state = self.legacy_fixture()
+        module, migration = self.migration_runtime()
+        preview = self.migrate("--dry-run")
+        snapshot = preview["inventory"]["tasks"]["T001"]["snapshot"]
+        result = self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced")
+        self.assertEqual(result["phase"], "completed")
+        tree = self.home / "worktrees" / "T001"
+        self.assertEqual(migration.scan(tree, skip=(".git",)), snapshot["content"])
+        self.assertEqual(hashlib.sha256(Path(snapshot["private_git"], "index").read_bytes()).hexdigest(), snapshot["index_sha256"])
+        old_ref = "refs/heads/" + state["tasks"]["T001"]["branch"]
+        self.assertEqual(self.git("rev-parse", old_ref), snapshot["head"])
+        self.assertEqual(self.git("branch", "--show-current", root=tree), migration.r.namespace.branch("T001"))
+        self.assertFalse(Path(state["tasks"]["T001"]["worktree"]).exists())
+        self.assertFalse((self.home / "worktrees" / "T003").exists())
+        self.assertEqual((self.home / "plan.md").read_bytes(), (source / "plan.md").read_bytes())
+        self.assertEqual((self.home / "tasks/T001/brief.md").read_bytes(), (source / "tasks/T001/brief.md").read_bytes())
+        self.assertEqual((self.home / "tasks/T001/history/v1/accepted.json").read_bytes(), (source / "tasks/T001/accepted.json").read_bytes())
+        self.assertFalse((self.home / "tasks/T001/accepted.json").exists())
+        journal = json.loads(Path(result["journal"]).read_text())
+        self.assertEqual(json.loads(Path(result["journal"]).with_name("inventory.json").read_text()), preview["inventory"])
+        archive = Path(result["backup"]) / "objects.idx"
+        self.assertFalse((Path(result["backup"]) / "worktrees/T001/.git").exists())
+        listing = self.git("verify-pack", "-v", str(archive))
+        staged_blob = self.git("rev-parse", ":staged.txt", root=tree)
+        historical = json.loads((source / "tasks/T001/old-proof.json").read_text())["head"]
+        self.assertIn(staged_blob, listing)
+        self.assertIn(historical, listing)
+        self.assertIn(staged_blob, journal["object_roots"])
+        before = self.snapshot(source), self.snapshot(migration.r.control)
+        self.assertTrue(self.migrate()["noop"])
+        self.assertEqual(before, (self.snapshot(source), self.snapshot(migration.r.control)))
+        self.call("init", manager="fresh", owner=False)
+        self.assertEqual(sorted(x["manager_id"] for x in self.call("managers", manager=None, owner=False)["managers"]), ["converted", "fresh"])
+
+    def test_migration_history_is_not_current_acceptance_or_worker_identity(self):
+        source, state = self.legacy_fixture()
+        preview = self.migrate("--dry-run")
+        self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced")
+        self.claim_migrated()
+        migrated = self.state(manager="converted")
+        self.assertEqual(migrated["state"], "verification")
+        self.assertEqual(migrated["acceptance_eligibility"], "reverify_required")
+        self.assertIsNone(migrated["verification"])
+        self.assertIsNone(migrated["accepted"])
+        self.assertIsNotNone(migrated["accepted_history"])
+        self.call("accept", "T001", manager="converted", ok=False)
+        self.call("report", "T001", "--attempt", "1", "--state", "done", "--summary", "Old writer", manager="converted", ok=False)
+        self.call("spawn", "--id", "T003", manager="converted", ok=False)
+        messages = self.call("inbox", "T001", manager="converted", owner=False)
+        self.assertTrue(messages[0]["acknowledged"])
+        self.assertFalse(messages[0]["current_attempt"])
+        previous = self.call("inbox", "T002", manager="converted", owner=False)
+        self.assertTrue(previous[0]["acknowledged"])
+        self.assertFalse(previous[0]["current_attempt"])
+        self.verify(manager="converted", command="test -f staged.txt")
+        accepted = self.call("accept", "T001", manager="converted")
+        self.assertEqual(accepted["acceptance_eligibility"], "current")
+        self.call("spawn", "--id", "T003", manager="converted")
+        retried = self.call("retry", "T002", manager="converted")
+        self.assertEqual(retried["attempt"], 3)
+        assignment = json.loads((self.home / "tasks/T002/assignment.json").read_text())
+        self.assertTrue(assignment["reporting_enabled"])
+        self.call("report", "T002", "--attempt", "3", "--state", "working", "--summary", "New v2 writer", manager="converted")
+        before = self.snapshot(self.home)
+        self.assertTrue(self.migrate()["noop"])
+        self.assertEqual(before, self.snapshot(self.home))
+
+    def test_migration_requires_assertion_hash_and_ref_destination_freshness(self):
+        source, state = self.legacy_fixture()
+        preview = self.migrate("--dry-run")
+        self.migrate("--expect-source", preview["source_sha256"], ok=False)
+        self.migrate("--source-quiesced", ok=False)
+        (source / "unknown-note.txt").write_text("changed source\n")
+        self.migrate("--source-quiesced", "--expect-source", preview["source_sha256"], ok=False)
+        self.assertFalse((source / ".migration.json").exists())
+        preview = self.migrate("--dry-run")
+        ref = preview["inventory"]["tasks"]["T001"]["new_ref"]
+        self.git("update-ref", ref, preview["inventory"]["tasks"]["T001"]["snapshot"]["head"])
+        blocked = self.migrate("--dry-run")
+        self.assertIn("Destination ref already exists: " + ref, blocked["blockers"])
+        self.migrate("--source-quiesced", "--expect-source", preview["source_sha256"], ok=False)
+
+    def test_migration_rejects_live_and_unknown_panes_without_stopping_them(self):
+        source, state = self.legacy_fixture()
+        session = state["session"]
+        subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", "mgr-T001", "sleep 60"], env=self.env, check=True, capture_output=True)
+        # fake tmux creates the session first and records windows separately.
+        if not USE_REAL:
+            subprocess.run(["tmux", "new-window", "-d", "-t", session + ":", "-n", "mgr-T001", "sleep 60"], env=self.env, check=True, capture_output=True)
+        before = self.snapshot(source)
+        preview = self.migrate("--dry-run")
+        self.assertTrue(any("Live legacy pane" in b for b in preview["blockers"]))
+        self.migrate("--source-quiesced", "--expect-source", preview["source_sha256"], ok=False)
+        self.assertEqual(before, self.snapshot(source))
+        self.assertTrue(any("Live legacy pane" in b for b in self.migrate("--dry-run")["blockers"]))
+
+    def test_migration_rejects_busy_source_locks_without_modifying_data(self):
+        source, state = self.legacy_fixture()
+        module, migration = self.migration_runtime()
+        for path in (source / ".lock", source / "tasks/T001/.report.lock"):
+            with module.lock(path):
+                before = self.snapshot(source)
+                preview = self.migrate("--dry-run")
+                self.assertTrue(any("Busy legacy" in b for b in preview["blockers"]))
+                self.migrate("--source-quiesced", "--expect-source", preview["source_sha256"], ok=False)
+                self.assertEqual(before, self.snapshot(source))
+
+    def test_migration_resumes_after_each_phase_and_git_side_effect(self):
+        source, state = self.legacy_fixture()
+        module, migration = self.migration_runtime()
+        preview = self.migrate("--dry-run")
+        args = self.migration_args(preview)
+        for phase in ("backed_up", "refs_prepared", "worktrees_moved", "data_converted", "validated", "completed"):
+            original = migration.phase
+            def crash(name):
+                if name == phase:
+                    raise RuntimeError("Fixture interruption before phase commit: " + name)
+                original(name)
+            with mock.patch.object(migration, "phase", crash):
+                with mock.patch.dict(os.environ, self.env, clear=True):
+                    with self.assertRaises(RuntimeError):
+                        migration.execute(args)
+            args.resume = migration.journal["id"]
+            observed = self.migrate("--dry-run")
+            self.assertEqual(observed["migration_id"], args.resume)
+            self.call("init", manager="other", owner=False, ok=False)
+            self.call("owner", "claim", "--session-id", "blocked", "--credential-file", str(self.directory / "blocked.json"),
+                      manager="converted", owner=False, ok=False)
+            self.migrate("--source-quiesced", ok=False)
+            self.migrate("--resume", args.resume, ok=False)
+        result = self.migrate("--resume", args.resume, "--source-quiesced")
+        self.assertEqual(result["phase"], "completed")
+        self.assertTrue(self.migrate()["noop"])
+
+    def interrupted_migration(self, phase="backed_up"):
+        source, state = self.legacy_fixture()
+        module, migration = self.migration_runtime()
+        preview = self.migrate("--dry-run")
+        args = self.migration_args(preview)
+        original = migration.phase
+        def crash(name):
+            original(name)
+            if name == phase:
+                raise RuntimeError("Fixture interruption after phase: " + phase)
+        with mock.patch.object(migration, "phase", crash), mock.patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(RuntimeError):
+                migration.execute(args)
+        return source, state, migration, migration.journal["id"]
+
+    def test_migration_preflight_rejects_schema_control_symlinks_and_destinations(self):
+        source, state = self.legacy_fixture()
+        path = source / "state.json"
+        original = path.read_bytes()
+        for patch in ({"version": 99}, {"version": 1.0}, {"root": "/foreign"}, {"session": "foreign"}):
+            path.write_text(json.dumps({**state, **patch}))
+            before = self.snapshot(source)
+            self.assertTrue(self.migrate("--dry-run")["blockers"])
+            self.assertEqual(before, self.snapshot(source))
+        path.write_bytes(original)
+        self.home.mkdir()
+        self.assertIn("Destination manager already exists", self.migrate("--dry-run")["blockers"])
+        self.home.rmdir()
+        outside = self.directory / "outside-control"
+        outside.write_text("private original\n")
+        note = source / "unknown-note.txt"
+        original_note = note.read_bytes()
+        note.unlink()
+        note.symlink_to(outside)
+        self.assertTrue(self.migrate("--dry-run")["blockers"])
+        self.assertEqual(outside.read_text(), "private original\n")
+        note.unlink()
+        note.write_bytes(original_note)
+        corrupted = json.loads(original)
+        corrupted["tasks"]["T001"]["dependencies"] = ["T003"]
+        path.write_text(json.dumps(corrupted))
+        self.assertTrue(any("Cyclic" in b for b in self.migrate("--dry-run")["blockers"]))
+        path.write_bytes(original)
+        foreign = source / "tasks" / "UNKNOWN"
+        foreign.mkdir()
+        self.assertTrue(any("Unknown" in b for b in self.migrate("--dry-run")["blockers"]))
+
+    def test_migration_preflight_rejects_missing_locked_git_operations_and_submodules(self):
+        source, state = self.legacy_fixture()
+        tree = Path(state["tasks"]["T001"]["worktree"])
+        saved = self.directory / "saved-legacy-tree"
+        tree.rename(saved)
+        self.assertTrue(self.migrate("--dry-run")["blockers"])
+        saved.rename(tree)
+        self.git("worktree", "lock", str(tree))
+        self.assertTrue(any("Locked" in b for b in self.migrate("--dry-run")["blockers"]))
+        self.git("worktree", "unlock", str(tree))
+        private = Path(self.git("rev-parse", "--absolute-git-dir", root=tree))
+        marker = private / "MERGE_HEAD"
+        marker.write_text(self.git("rev-parse", "HEAD", root=tree) + "\n")
+        self.assertTrue(any("in-progress" in b for b in self.migrate("--dry-run")["blockers"]))
+        marker.unlink()
+        (tree / ".gitmodules").write_text('[submodule "nested"]\n path = nested\n url = invalid\n')
+        self.assertTrue(any("Submodule" in b for b in self.migrate("--dry-run")["blockers"]))
+        (tree / ".gitmodules").unlink()
+        self.assertEqual(self.migrate("--dry-run")["blockers"], [])
+
+    def test_migration_changed_ignored_content_or_index_invalidates_preview(self):
+        source, state = self.legacy_fixture()
+        tree = Path(state["tasks"]["T001"]["worktree"])
+        preview = self.migrate("--dry-run")
+        (tree / "cache/output").write_text("new ignored bytes\n")
+        self.assertNotEqual(self.migrate("--dry-run")["source_sha256"], preview["source_sha256"])
+        self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced", ok=False)
+        self.assertFalse((source / ".migration.json").exists())
+        preview = self.migrate("--dry-run")
+        (tree / "staged.txt").write_text("new staged bytes\n")
+        self.git("add", "staged.txt", root=tree)
+        self.assertNotEqual(self.migrate("--dry-run")["source_sha256"], preview["source_sha256"])
+        self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced", ok=False)
+
+    def test_migration_damaged_completion_becomes_failed_without_fabricating_acceptance(self):
+        source, state = self.legacy_fixture()
+        (source / "tasks/T001/status.json").write_text("broken json")
+        (source / "tasks/T001/result.md").unlink()
+        (source / "tasks/T002/status.json").write_text("[]")
+        preview = self.migrate("--dry-run")
+        self.assertEqual(preview["blockers"], [])
+        self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced")
+        self.claim_migrated()
+        task = self.state(manager="converted")
+        self.assertEqual(task["state"], "failed")
+        self.assertIsNone(task["verification"])
+        self.assertEqual(task["acceptance_eligibility"], "reverify_required")
+        self.assertEqual((self.home / "tasks/T001/history/v1/status.json").read_text(), "broken json")
+        self.assertEqual(self.state("T002", manager="converted")["state"], "failed")
+        self.assertEqual((self.home / "tasks/T002/history/v1/status.json").read_text(), "[]")
+        self.call("verify", "T001", "--review", str(self.review), "--command", "true", manager="converted", ok=False)
+
+    def test_migration_source_change_after_backup_is_preserved_and_resume_refused(self):
+        source, state, migration, identity = self.interrupted_migration()
+        backup = self.snapshot(migration.directory / "backup")
+        note = source / "unknown-note.txt"
+        note.write_text("external source mutation\n")
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertEqual(note.read_text(), "external source mutation\n")
+        self.assertEqual(backup, self.snapshot(migration.directory / "backup"))
+        self.assertEqual(self.git("for-each-ref", "--format=%(refname)", "refs/heads/manager/" + migration.r.key + "/converted"), "")
+        self.assertFalse(migration.probe_lock(source / ".lock"))
+
+    def test_migration_backup_and_moved_tree_changes_are_never_overwritten(self):
+        source, state, migration, identity = self.interrupted_migration("worktrees_moved")
+        tree = self.home / "worktrees" / "T001"
+        note = tree / "notes.txt"
+        original = note.read_bytes()
+        note.write_text("external destination mutation\n")
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertEqual(note.read_text(), "external destination mutation\n")
+        note.write_bytes(original)
+        mode = self.home.stat().st_mode & 0o7777
+        self.home.chmod(mode ^ 0o100)
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertEqual(self.home.stat().st_mode & 0o7777, mode ^ 0o100)
+        self.home.chmod(mode)
+        backup_note = migration.directory / "backup/manager/plan.md"
+        backup_note.write_text("damaged backup\n")
+        before = self.snapshot(migration.directory / "backup")
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertEqual(before, self.snapshot(migration.directory / "backup"))
+
+    def test_migration_recovers_ref_move_switch_and_partial_conversion_intents(self):
+        source, state = self.legacy_fixture()
+        module, migration = self.migration_runtime()
+        args = self.migration_args(self.migrate("--dry-run"))
+        original_git = migration.git
+        for action in ("move", "switch"):
+            def crash(root, *argv):
+                value = original_git(root, *argv)
+                if (action == "move" and argv[:2] == ("worktree", "move")) or (action == "switch" and argv[:2] == ("symbolic-ref", "HEAD")):
+                    raise RuntimeError("Fixture interruption after Git side effect: " + action)
+                return value
+            with mock.patch.object(migration, "git", crash), mock.patch.dict(os.environ, self.env, clear=True):
+                with self.assertRaises(RuntimeError):
+                    migration.execute(args)
+            args.resume = migration.journal["id"]
+        original_write = module.atomic_json
+        def partial(path, value):
+            original_write(path, value)
+            if path == self.home / "tasks/T002/status.json":
+                raise RuntimeError("Fixture interruption after partial conversion")
+        with mock.patch.object(module, "atomic_json", partial), mock.patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(RuntimeError):
+                migration.execute(args)
+        args.resume = migration.journal["id"]
+        self.assertEqual(self.migrate("--resume", args.resume, "--source-quiesced")["phase"], "completed")
+
+    def test_migration_ref_race_and_corrupt_mapping_cannot_adopt_or_escape(self):
+        source, state, migration, identity = self.interrupted_migration()
+        entry = migration.journal["inventory"]["tasks"]["T001"]
+        self.git("update-ref", entry["new_ref"], entry["snapshot"]["head"])
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertTrue(Path(entry["old_tree"]).exists())
+        self.git("update-ref", "-d", entry["new_ref"])
+        journal_path = migration.directory / "journal.json"
+        journal = json.loads(journal_path.read_text())
+        outside = self.directory / "escape-target"
+        journal["inventory"]["tasks"]["T001"]["new_tree"] = str(outside)
+        journal["source_sha256"] = migration.digest(journal["inventory"])
+        journal_path.write_text(json.dumps(journal))
+        self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertFalse(outside.exists())
+
+    def test_migration_sigkill_after_move_releases_locks_and_resumes(self):
+        source, state = self.legacy_fixture()
+        preview = self.migrate("--dry-run")
+        marker = self.directory / "moved-marker"
+        script = self.directory / "migration-crash.py"
+        script.write_text("import runpy, sys, pathlib, time, argparse\n"
+            "sys.path.insert(0, " + repr(str(CLI.parent)) + ")\n"
+            "m = runpy.run_path(" + repr(str(CLI)) + ")\n"
+            "r = m['Runtime'](" + repr(str(self.root)) + ", 'converted', inventory=True)\n"
+            "migration = m['migration'].Migration(r)\noriginal = migration.git\n"
+            "def pause(root, *args):\n value = original(root, *args)\n if args[:2] == ('worktree', 'move'):\n  pathlib.Path(" + repr(str(marker)) + ").write_text('moved')\n  time.sleep(30)\n return value\n"
+            "migration.git = pause\n"
+            "migration.execute(argparse.Namespace(dry_run=False, resume=None, source_quiesced=True, expect_source=" + repr(preview["source_sha256"]) + "))\n")
+        process = subprocess.Popen([sys.executable, str(script)], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 20
+            while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists())
+        finally:
+            process.kill()
+            process.communicate(timeout=10)
+        identity = json.loads((source / ".migration.json").read_text())["id"]
+        self.assertEqual(self.migrate("--resume", identity, "--source-quiesced")["phase"], "completed")
+
+    def test_migration_unknown_dead_pane_and_post_preview_ref_race_are_rejected(self):
+        source, state = self.legacy_fixture()
+        preview = self.migrate("--dry-run")
+        module, migration = self.migration_runtime()
+        original = migration.prepare_refs
+        def race():
+            for entry in migration.journal["inventory"]["tasks"].values():
+                if entry["snapshot"]:
+                    self.git("update-ref", entry["new_ref"], entry["snapshot"]["head"])
+            return original()
+        with mock.patch.object(migration, "prepare_refs", race), mock.patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(module.Error):
+                migration.execute(self.migration_args(preview))
+        identity = migration.journal["id"]
+        for _ in range(2):
+            self.migrate("--resume", identity, "--source-quiesced", ok=False)
+        self.assertTrue(Path(state["tasks"]["T001"]["worktree"]).exists())
+        self.executable("tmux", "#!/usr/bin/env python3\nprint('unknown-window\\t%999\\t1')\n")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            _, blockers = migration.panes(state["tasks"])
+            self.assertTrue(any("Unknown legacy pane" in b for b in blockers))
+
+    def test_migration_failed_and_cancelled_done_claims_remain_nonaccepted(self):
+        source, state = self.legacy_fixture()
+        state["tasks"]["T001"]["state"] = "cancelled"
+        state["tasks"]["T002"]["state"] = "failed"
+        state["tasks"]["T002"]["accepted"] = None
+        report = json.loads((source / "tasks/T002/status.json").read_text())
+        report["state"] = "done"
+        (source / "tasks/T002/status.json").write_text(json.dumps(report))
+        (source / "tasks/T002/result.md").write_text("Old done claim after failure.\n")
+        (source / "state.json").write_text(json.dumps(state))
+        preview = self.migrate("--dry-run")
+        self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced")
+        self.claim_migrated()
+        observed = self.call("reconcile", manager="converted")["tasks"]
+        statuses = {t["task_id"]: t for t in observed}
+        self.assertEqual(statuses["T001"]["state"], "cancelled")
+        self.assertEqual(statuses["T002"]["state"], "failed")
+        self.assertEqual(statuses["T002"]["acceptance_eligibility"], "unaccepted")
+
+    @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
+
     @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
     def test_real_interactive_worker_receives_message(self):
         import time

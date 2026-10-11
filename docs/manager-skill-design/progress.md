@@ -1,18 +1,28 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-10。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05 本輪工作樹完成、尚未提交；後續以實際 status/log 為準。
+最後更新：2026-10-11。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`。MM-06 提交以 `feat: add recoverable v1 manager migration` 識別；hash 與後續變更以實際 status/log 為準。
 
-**目前狀態：MM-02–MM-05 完成（namespace／主控交接／獨立整合與 combined evidence／共用本地交付 gate），最終預設／真實 tmux 測試通過；SPEC-001 為 Implementing。下一步 MM-06 migration；真實 Agent smoke test 仍待後續完成。**
+**目前狀態：MM-02–MM-06 完成（namespace／主控／整合／交付／migration），最終預設／真實 tmux 完整回歸通過；SPEC-001 為 Implementing。下一步 MM-07 整體組合與文件驗證；真實 Agent smoke test 仍待後續完成。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 接續 **MM-06**：先讀 [SPEC-001 §8](specs/001-multi-manager-isolation.md#8-舊格式遷移契約)、[ADR-0004](adr/0004-runtime-migration.md) 與 [MM-05 validation](reviews/MM-05-validation.md)。沿用 common maintenance 鎖與 namespace／owner／operation 機制，實作零寫入 dry-run、source hash/quiescence、完整 backup/journal、refs／worktree mapping、歷史資格失效、forward resume／tombstone。先以暫存 v1 fixture 驗證，不搬移使用者真實資料。保留 MM-05 的 expected-OID／receipt 與 checked-out target 拒絕；原 **MVP-02/MM-08** 真實 Agent 缺口不關閉。
+4. 接續 **MM-07**：先讀 [SPEC-001](specs/001-multi-manager-isolation.md)、[MM-06 validation](reviews/MM-06-validation.md) 與 [runtime reference](../../skills/manager/references/runtime.md)。整體檢查 namespace／owner handoff／long checks／integration／delivery／migration 合用、CLI 範例與 SKILL/protocol 一致性，補足 deterministic 組合驗證；各功能使用說明已於實作時同步。保留 expected-OID／receipt、checked-out target 拒絕、quiescence／forward-only migration，仍只用暫存 fixtures。MM-07 完成後 SPEC-001 仍為 Implementing，**MVP-02/MM-08** 真實 Agent 缺口不關閉。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-11：MM-05 提交與 MM-06 完成
+
+- 使用者要求 commit 後接續任務；MM-05 提交為 `a5521bb`，再接 MM-06，沒有 push。
+- 完成 explicit selector／零寫入 dry-run、source hash/quiescence、maintenance/v1 registry/report locks、immutable inventory、common phase/intent journal、完整 raw/tree/private Git/index 備份與 object pins/pack。Git move 及同 OID symbolic HEAD 切換保留 dirty/staged/untracked/ignored/modes/links，舊 refs 不刪改。
+- 清空 current acceptance/verification/acks，保存 accepted_history 與 raw history；disabled snapshot assignment 拒絕 Worker report。新 owner 明確 claim，重新 review/verify/accept 才能啟用依賴／整合，新 spawn/retry 使用新身份。原 failed/cancelled 不被舊 done claim 覆蓋。
+- 完成 phase／side-effect forward resume、source/backup/tree/ref/mode 外部變動拒絕與保留、SIGKILL locks 釋放、pending root guard／completion tombstone。Completed rerun 零寫入查證並保留後續合法 v2 任務變化；沒有自動停止／rollback／cleanup。
+- 證據：[MM-06 validation](reviews/MM-06-validation.md)。修正後 18 項 focused migration（72.568s）及損壞 namespace 清單查閱回歸（0.434s）通過；最終預設 104 項：103 通過、1 real-only skip（302.326s）；真實 tmux 104 項全通過（332.926s）。YAML 成功路徑 1 項（1.263s）、skill 格式通過；靜態結果以 validation 最終紀錄為準。
+- 同步 SKILL/protocol/runtime/README、spec/ADR/tasks/progress。只用暫存 v1 fixtures／假的 Worker，不操作使用者真實 runtime；MM-06 提交以 `feat: add recoverable v1 manager migration` 識別，Git status/log 為準。
+- 下一步 MM-07；MM-07–MM-08 未開始，SPEC-001 維持 Implementing；真實 Agent／MM-08／MVP-02 未驗證。
 
 ## 2026-10-10：MM-05 完成與下一步
 
@@ -76,7 +86,7 @@
 | 範圍 | 當前能力 |
 | --- | --- |
 | Skill 行為 | Manager 擁有 outcome，規劃、派工、監督、回答問題、review、獨立驗證與整合 |
-| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers`、`owner status/claim/release/takeover`、`integration init/status/verify` 與 `deliver` |
+| Runtime CLI | namespaced `init`、`task`、`spawn`、`send`、`inbox`、`peek`、`status`、`report`、`verify`、`accept`、`stop`、`retry`、`reconcile`、`events`、`escalate`；`managers`、`owner status/claim/release/takeover`、`integration init/status/verify`、`deliver` 與 explicit `migrate` |
 | Agent adapters | Codex／Claude Code 互動式 CLI；`auto` 偵測、明確指定 provider、基本角色設定 |
 | 隔離 | 每個 Worker 使用獨立 tmux window 與 Git worktree；預設從已提交的 `HEAD` 建立，可指定 `--base` |
 | 任務依賴 | 可登錄依賴；只允許依賴已被 Manager 接受的任務啟動；尚無自動排程 |
@@ -86,6 +96,7 @@
 | 查閱／主控 | status/peek/events/inbox/managers/owner status 零管理資料寫入；claim/release/takeover、credential guard／generation fencing 與交接恢復 |
 | 驗收 | Worker `done` 先進入 Manager `verification`；`verify` 需 review 與檢查指令，`accept` 再確認證據及成果未變動 |
 | 整合／交付 | 每 manager integration branch/tree、current accepted 來源、combined evidence／hash index／純讀資格核對；common 短 gate 對既有未 checkout 本地分支 transaction／receipt 交付與中斷診斷 |
+| Migration | v1 dry-run/hash/quiescence、backup/journal/object archive、新 refs／Git move、歷史資格重驗、forward resume/tombstone；無自動 rollback |
 | 恢復 | 偵測中斷／stale／orphan；保留成果；`retry` 沿用 worktree、遞增 attempt，拒絕舊 attempt 回報；預設最多 2 次 restart |
 | 設定 | `.manager.yml`；預設流程只使用 Python 標準函式庫，YAML 語法需 PyYAML，JSON 語法不需額外依賴 |
 

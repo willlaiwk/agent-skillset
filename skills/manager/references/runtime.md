@@ -1,8 +1,8 @@
-# Runtime reference (v2 namespace, ownership, integration and delivery, MM-05)
+# Runtime reference (v2 namespace, ownership, integration, delivery and migration, MM-06)
 
 ## Current support
 
-The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Isolated integration init/status/verify, combined evidence and a shared local delivery gate are available. Migration and real-provider validation are still pending. Do not use this version to migrate v1 data or claim that the complete multi-manager design is implemented.
+The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Isolated integration init/status/verify, combined evidence, a shared local delivery gate and explicit v1 migration are available. Overall composition and real-provider validation are still pending; the complete multi-manager design remains in implementation.
 
 Python 3.9+ and Git on a POSIX host are required. Starting workers additionally requires tmux and an installed, authenticated `codex` or `claude`. Default operation uses the Python standard library; YAML `.manager.yml` requires PyYAML in the same interpreter. JSON syntax in that file needs no additional dependency. Missing YAML support is an explicit error, never silently ignored.
 
@@ -29,7 +29,7 @@ IDs use 1–64 lowercase ASCII letters, digits, `_`, or `-`, starting with a let
 
 `managers`, `owner status`, `status`, `peek`, `events`, and `inbox` do not write state, events, ignore files, or lock files. `status.tasks` is persisted manager state; `status.observed` contains live diagnostic tasks/notices/orphans. An observed completion is still a worker claim, not acceptance. Use owner-only `reconcile` to persist observations. `peek` reads the matching pane without reconciliation. Concurrent changes to files read by inspection return an inconsistent/busy error instead of silently repairing data. Git inspection disables optional index refresh writes.
 
-`managers` reports corrupt namespaces per entry and preserves them; detected legacy artifacts are diagnostics. V1 `.manager/state.json` blocks normal v2 operations with explicit migration guidance. Migration is not yet implemented: keep the original files and use an appropriate previously installed v1 runtime if continuing legacy work; do not move them manually or initialize over them.
+`managers` reports corrupt namespaces per entry and preserves them; detected legacy artifacts are diagnostics. V1 `.manager/state.json` blocks normal v2 operations with explicit migration guidance. Follow the migration workflow below; keep artifacts in place until that workflow moves registered trees. Pending migration blocks normal operations for that root. A completed tombstone with a matching journal/destination retires the legacy layout and allows additional v2 managers.
 
 ## Owner and management commands
 
@@ -149,7 +149,7 @@ Combined checks hold only `.integration.operation.lock`; short registry/source r
 
 `integration status` is read-only and returns `eligible` for retained **evidence** after rechecking the committed record hash and current snapshots. It also appears under project `status.integration` and `reconcile.integration`. Changing candidate, target, source acceptance/content or review invalidates eligibility; an old run is not refreshed by recomputing its fingerprint. Completed unchanged evidence survives takeover. Failed checks/timeouts/interrupted runs never gain eligibility from their journal: the owner must complete a new verify. Reconcile skips a busy integration or, after acquiring its resource lock, checks the pending journal/snapshot and records interrupted/fenced diagnostics. Quiesce surviving check children separately before editing the tree; do not delete locks.
 
-`eligible: true` does not mean delivered or authorized to deliver. Use the gate below only within existing delivery authorization. No external push/PR or migration is provided.
+`eligible: true` does not mean delivered or authorized to deliver. Use the gate below only within existing delivery authorization. External push/PR workflows remain separate.
 
 ## Local delivery and recovery
 
@@ -168,6 +168,33 @@ Before ref changes, the gate durably writes `<git-common-dir>/manager-runtime/de
 `reconcile.deliveries` diagnoses each of this manager's intents under the same short gate, without automatically updating refs. A matching direct receipt proves `committed`, even if target/candidate/source later change. A missing receipt with target still at old OID yields `not_committed`; a `deliver` retry must pass all final checks again. Wrong/symbolic/lost completed receipts yield `ambiguous`; a missing receipt with a changed/missing/symbolic target yields `external_change`. Neither state guesses success from target equality or automatically rewrites refs. Explicit transaction rejection is retained so an externally raced receipt cannot later become proof of success. A completed retry returns the original receipt without re-delivery. Damaged intent/evidence or unsafe paths are errors; busy delivery reconciliation is reported as `operation_busy` while task reconciliation can continue.
 
 A stale target requires deliberate integration of the latest target and a **new** combined verification. Owner credentials and evidence are consistency checks, not new authorization. Git advisory locks do not stop external tools: during the short gate, participants must coordinate worktree creation/checkout and direct/symbolic ref-type changes through common maintenance. Expected OID detects external OID races but cannot prevent a same-OID symbolic conversion or external checkout race. The runtime does not claim atomicity across Git refs and worktree registration.
+
+## Explicit v1 migration
+
+```sh
+manager --root /project migrate --manager-id feature-login --dry-run
+# After stopping all legacy management writes, providers and check children:
+manager --root /project migrate --manager-id feature-login \
+  --expect-source SOURCE_SHA256 --source-quiesced
+# If interrupted, use the ID in .manager/.migration.json / the common journal:
+manager --root /project migrate --manager-id feature-login \
+  --resume MIGRATION_ID --source-quiesced
+manager --root /project --manager-id feature-login owner claim \
+  --session-id session-a --credential-file /tmp/session-a.owner.json
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json reconcile
+```
+
+The destination selector must be explicit, either globally or on `migrate`; conflicting selectors fail. Dry-run returns inventory, `source_sha256`, ref/path mapping and blockers without creating locks, changing Git/ignore files or stopping panes. The hash covers raw controls, file modes, tracked/staged/untracked/ignored contents, symlink values, index/private Git metadata and the observed pane inventory. Changing source data requires a fresh preview. Dry-run on a pending migration reports its stored inventory and resume ID rather than claiming a new source snapshot.
+
+`--source-quiesced` asserts that every legacy Session, provider and surviving child has stopped writing. It does not stop them or prove their absence by PID/time. Known live panes, unknown panes even when dead, busy v1 locks, unsafe control symlinks, unsupported schemas, unknown task/worktree ownership, existing destination/ref, missing/locked/prunable trees, Git operations and submodules block migration. The v1 tmux session must be inspectable; tmux is required, even though migration never starts a provider. Dirty/staged/untracked/ignored worktree files are supported. Actual execution holds common maintenance → v1 registry → sorted task report locks and rechecks snapshots; external writers must honor the cooperative quiescence prerequisite.
+
+Durable data lives outside the source at `<git-common-dir>/manager-runtime/migrations/{project-key}/{migration-id}/journal.json` and `backup/`. Journal phases are `preflight → backed_up → refs_prepared → worktrees_moved → data_converted → validated → completed`; ref/move/switch/copy intents and result fingerprints make interrupted effects reviewable. Backup preserves raw controls/human files, complete tree contents and modes, symlink values, each private Git directory/index, plus historical commit and staged-blob objects in a verified `objects.pack`/`objects.idx`. Unique `refs/manager-backup/migrations/...` pins retain those objects. Backup trees omit their active `.git` pointer; its original bytes are saved separately under `worktree-pointers/` so the backup cannot act as another handle to the live index.
+
+Old task refs remain at their original OIDs. New `manager/{project-key}/{ID}/tasks/{T}` refs are created transactionally at the same commits. Git moves linked worktrees into the namespace; switching only symbolic HEAD to the identical-OID branch preserves the original index and tree bytes. No reset, stash, force or source ref deletion runs. Queued attempt-zero tasks have no new worktree until launch. Unknown ordinary source files are retained. Original controls remain retired history at the source, and raw copies are available in `.manager/{ID}/history/v1/` and each task's `history/v1/`; briefs/logs/events are not rewritten to update old commands.
+
+All current acceptance and verification fields are cleared. Old accepted evidence becomes `accepted_history` with hashes. Valid completed results become `verification` with `reverify_required`; interrupted or damaged completion becomes `failed`. Existing failed/cancelled tasks stay so, while queued tasks remain queued. Historical acknowledgments remain visible but current acks are empty. Converted `origin: migration` assignments have `reporting_enabled: false`: managers can independently verify retained valid completion, but workers cannot report/ack with that identity. Only a new spawn/retry enables reporting with a fresh assignment. Dependency/integration gates require new current acceptance; old prompts and provider conversations cannot resume as v2 workers.
+
+Completion writes a v2 migration tombstone to the old `.manager/state.json`, releases the new owner, and binds marker/journal/destination. Old v1 init/load fail; old paths do not route reports into v2. After any interruption, resume only the recorded migration ID with the same quiescence assertion. Changes to source, moved trees, refs, backup or converted artifacts cause an error with both sides preserved. No automatic rollback, cleanup, repair or ref adoption runs. Once completed, repeating `migrate` for the same destination is a zero-write no-op after verifying identity and immutable backup/pins; it permits subsequent legitimate v2 task changes. Preserve all history and backup refs for deliberate recovery.
 
 ## Worker identity and messages
 

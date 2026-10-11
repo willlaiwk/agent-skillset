@@ -1,8 +1,8 @@
 # Manager Skill — 開發任務
 
-最後更新：2026-10-10。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
+最後更新：2026-10-11。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-10 完成 MM-02 namespace／路由、MM-03 主控交接、MM-04 獨立整合／combined evidence 及 MM-05 共用本地交付 gate，SPEC-001 為 Implementing；下一步 MM-06。MM-06–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
+2026-10-11 完成 MM-02–MM-06 namespace／主控／整合／交付／migration，SPEC-001 為 Implementing；下一步 MM-07。MM-07–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -14,7 +14,7 @@
 | MM-03 | 同 ID 主控所有權與交接 | Done | MM-02 | SPEC-001 §6；ADR-0002 |
 | MM-04 | 每 manager 的整合工作樹與證據 | Done | MM-02、MM-03 | SPEC-001 §7.1；ADR-0003 |
 | MM-05 | Repository 共用交付 gate | Done | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
-| MM-06 | v1 → v2 migration 與中斷恢復 | Todo | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
+| MM-06 | v1 → v2 migration 與中斷恢復 | Done | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
 | MM-07 | Skill／protocol／reference 同步與整體驗證 | Todo | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
 | MM-08 | 新格式真實 provider smoke test | Todo | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
 | MVP-02 | 現有 MVP 真實 Worker smoke test | Todo | 現有 MVP | [progress 的原任務](progress.md) |
@@ -82,7 +82,9 @@ MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它�
 - 目標：零寫入 dry-run、source hash/quiescence 預檢、完整 backup／journal、保留舊 refs／建立新 refs、Git worktree move、歷史資格失效、forward resume／tombstone；首版無自動 rollback。
 - 完成條件：AC-10–AC-13；保存 dirty/untracked/ignored 內容及歷史，不偽造驗證通過；舊 worker 不繼續寫新資料。
 - 驗證：v1 fixture、目的地衝突、symlink、未知版本、live worker、各階段注入故障、完成後重跑與失效 acceptance gate。
-- 證據／阻塞／接續：未開始；依賴 MM-02–MM-04；不對使用者真實專案試搬資料。
+- 結果：explicit dry-run/hash/quiescence、immutable inventory／完整 backup／object pins/pack、舊新 refs mapping、Git move／symbolic HEAD、歷史資格失效／disabled assignment、phase/intent forward resume／tombstone 完成；完成重跑為零寫入查證，不覆寫後續 v2 資料。
+- 證據：[MM-06 validation](reviews/MM-06-validation.md)；18 項遷移測試涵蓋 AC-10–AC-13、phase/side-effect 中斷、SIGKILL、來源／backup／tree／ref／mode 外部變動、dirty/index/ignored 歷史保留與重新驗收。最終預設 104 項（103 通過、1 real-only skip）、真實 tmux 104 項全通過；skill／YAML／靜態檢查通過。
+- 接續：MM-07；只操作暫存 v1 fixtures，不搬移使用者真實專案，不自動 rollback／cleanup；MM-08／MVP-02 真實 Agent 缺口保留。
 
 ### MM-07 — 文件同步與整體驗證
 

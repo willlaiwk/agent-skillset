@@ -19,7 +19,7 @@ import time
 import uuid
 
 sys.dont_write_bytecode = True
-from lib import adapter
+from lib import adapter, migration
 from lib.namespace import Namespace, generated_id, manager_id, reject_symlinks
 
 HERE = Path(__file__).resolve()
@@ -280,7 +280,9 @@ class Runtime:
         self.state_path = self.home / "state.json"
         self.session = self.namespace.session
 
-    def load(self):
+    def load(self, allow_migration=False, check_container=True):
+        if check_container and not allow_migration:
+            self.namespace.legacy_check()
         self.namespace.validate_layout()
         self.state = read_json(self.state_path)
         if (type(self.state.get("version")) is not int or self.state["version"] != 2
@@ -289,7 +291,7 @@ class Runtime:
                 or self.state.get("git_common_dir") != str(self.common)
                 or self.state.get("session") != self.session):
             raise Error("Unsupported state version or mismatched manager identity; preserve and repair state")
-        if self.state.get("migration"):
+        if self.state.get("migration") and not allow_migration:
             raise Error("Migration pending; inspect its journal and resume explicitly")
         self.owner()
         if not isinstance(self.state.get("tasks"), dict):
@@ -804,6 +806,8 @@ class Runtime:
                   " --assignment-id " + item["assignment_id"] + " to report status. Read your inbox and prior result "
                   "if present. Ask the manager through needs_manager; never bypass native permissions. "
                   "Write result.md before reporting done; manager acceptance is independent. " +
+                  ("This brief is preserved v1 history: use this v2 assignment and command, never legacy report commands or paths from the brief. "
+                   if item.get("origin") == "migration" else "") +
                   ("Commit only task-owned changes if repository/user policy permits."
                    if settings["git"]["auto_commit"] else "Do not commit unless the manager instructs you."))
         writable = [directory, self.home / "events" / item["task_id"],
@@ -882,13 +886,14 @@ class Runtime:
             self.event(args.id, "worker." + args.state, attempt=args.attempt)
             return value
 
-    def assignment(self, identity):
+    def assignment(self, identity, allow_migrated=False):
         record = read_json(self.directory(identity) / "assignment.json")
         if (type(record.get("version")) is not int or record["version"] != 2
                 or not self.namespace.matches(record, identity)
                 or type(record.get("attempt")) is not int or record["attempt"] < 1
                 or not self.valid_assignment_id(record.get("assignment_id"))
-                or record.get("reporting_enabled") is not True
+                or (record.get("reporting_enabled") is not True and not
+                    (allow_migrated and record.get("reporting_enabled") is False and record.get("origin") == "migration"))
                 or record.get("worktree") != str(self.home / "worktrees" / identity)):
             raise Error("Invalid, migrated or revoked worker assignment")
         return record
@@ -1067,7 +1072,7 @@ class Runtime:
             evidence.mkdir(parents=True)
             atomic_text(evidence / "review.md", review)
             with lock(directory / ".report.lock"):
-                assignment = self.assignment(args.id)
+                assignment = self.assignment(args.id, allow_migrated=True)
                 completion = read_json(directory / "status.json")
                 result = reject_symlinks(directory / "result.md")
                 if (not self.namespace.matches(completion, args.id)
@@ -1106,7 +1111,7 @@ class Runtime:
                         trees.get(current["worktree"], {}).get("branch") == "refs/heads/" + current["branch"]
                         and Path(current["worktree"]).is_dir())
                     after = self.fingerprint(current)
-                    unchanged = (before == after and self.assignment(args.id) == assignment and
+                    unchanged = (before == after and self.assignment(args.id, allow_migrated=True) == assignment and
                                  current["attempt"] == operation["attempt"] and
                                  current["assignment_id"] == operation["assignment_id"] and
                                  (current.get("operation") or {}).get("id") == identity and
@@ -1305,7 +1310,7 @@ class Runtime:
             raise Error("Invalid source verification review path: " + identity)
         accepted = read_json(directory / "accepted.json")
         report = read_json(directory / "status.json")
-        assignment = self.assignment(identity)
+        assignment = self.assignment(identity, allow_migrated=True)
         for value in (accepted, report, assignment):
             if (not self.namespace.matches(value, identity) or value.get("attempt") != item["attempt"]
                     or value.get("assignment_id") != item["assignment_id"]):
@@ -1787,6 +1792,12 @@ def parser():
     p.add_argument("--timeout", type=int, default=600)
     p = sub.add_parser("deliver", help="Authorized fast-forward of an existing un-checked-out local branch")
     p.add_argument("--verification", required=True)
+    p = sub.add_parser("migrate", help="Explicit v1 to v2 migration; no implicit init or rollback")
+    p.add_argument("--manager-id", dest="migration_manager_id", type=manager_id)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--expect-source")
+    p.add_argument("--source-quiesced", action="store_true")
+    p.add_argument("--resume")
     return cli
 
 
@@ -1794,13 +1805,19 @@ def list_managers(root):
     runtime = Runtime(root, inventory=True)
     container = runtime.namespace.container
     entries = []
+    try:
+        retired = runtime.namespace.retired_entries()
+    except (OSError, ValueError, argparse.ArgumentTypeError):
+        retired = set()
     if container.exists():
         for path in read_directory(container):
+            if path.name in retired:
+                continue
             try:
                 manager_id(path.name)
                 reject_symlinks(path)
                 item = Runtime(runtime.root, path.name, inventory=True)
-                item.load()
+                item.load(check_container=False)
                 entries.append({"manager_id": path.name, "version": 2,
                                 "owner": item.owner_summary(),
                                 "max_workers": config(item.root)["manager"]["max_workers"]})
@@ -1872,9 +1889,15 @@ def read_action(runtime, args):
 def main():
     global READ_FILES, READ_DIRS
     args = parser().parse_args()
+    if args.action == "migrate" and args.migration_manager_id:
+        if args.manager_id and args.manager_id != args.migration_manager_id:
+            emit({"error": "Conflicting migration manager selectors"})
+            return 1
+        args.manager_id = args.migration_manager_id
     readonly = args.action in ("managers", "status", "peek", "events", "inbox") or (
         args.action == "owner" and args.owner_action == "status") or (
-        args.action == "integration" and args.integration_action == "status")
+        args.action == "integration" and args.integration_action == "status") or (
+        args.action == "migrate" and args.dry_run)
     if readonly:
         READ_FILES, READ_DIRS = {}, {}
     try:
@@ -1899,11 +1922,13 @@ def main():
                     identity = generated_id()
                     if not (initial.namespace.container / identity).exists():
                         break
-            runtime = Runtime(args.root, identity)
+            runtime = Runtime(args.root, identity, inventory=args.action == "migrate")
             if worker and (os.environ["MANAGER_WORKER_ROOT"] != str(runtime.root) or
                            os.environ["MANAGER_WORKER_MANAGER"] != identity):
                 raise Error("Worker root/manager selector does not match its launch identity")
-            if args.action == "report":
+            if args.action == "migrate":
+                result = migration.Migration(runtime).execute(args)
+            elif args.action == "report":
                 supplied = args.assignment_id
                 launched = os.environ.get("MANAGER_WORKER_ASSIGNMENT")
                 if supplied and launched and supplied != launched:

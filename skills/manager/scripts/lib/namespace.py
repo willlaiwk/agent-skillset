@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import hashlib
+import json
 from pathlib import Path
 import re
 import uuid
@@ -70,14 +71,62 @@ class Namespace:
     def legacy_check(self):
         reject_symlinks(self.container)
         source = reject_symlinks(self.container / "state.json")
+        retired = self.retired_entries()
         if source.exists():
-            raise NamespaceError("Legacy or pending migration state at " + str(source) +
-                                 "; preserve it and migrate explicitly (migration is not implemented yet)")
+            if not retired:
+                raise NamespaceError("Legacy or pending migration state at " + str(source) +
+                                     "; preserve it and use migrate --dry-run or explicit --resume")
         if self.container.exists():
             for child in self.container.iterdir():
+                if child.name in retired:
+                    continue
                 if child.name in RESERVED or child.name in (".lock", "plan.md") or not child.is_dir():
                     raise NamespaceError("Legacy or unrecognized runtime artifacts at " + str(child) +
                                          "; preserve them and diagnose before initialization")
+
+    def retired_entries(self):
+        """Only a proven completed tombstone permits v2 alongside retained history."""
+        marker_path = reject_symlinks(self.container / ".migration.json")
+        if not marker_path.exists():
+            return set()
+        def read(path):
+            reject_symlinks(path)
+            try:
+                value = json.loads(path.read_bytes())
+                if not isinstance(value, dict):
+                    raise ValueError("expected object")
+                return value
+            except (OSError, ValueError) as exc:
+                raise NamespaceError("Invalid migration artifact: " + str(path)) from exc
+        marker = read(marker_path)
+        identity, destination = marker.get("id"), marker.get("manager_id")
+        if (not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{32}", identity)
+                or marker.get("root") != str(self.root) or marker.get("project_key") != self.key
+                or not isinstance(destination, str)):
+            raise NamespaceError("Invalid migration marker identity")
+        manager_id(destination)
+        journal = read(self.control / "migrations" / self.key / identity / "journal.json")
+        if (type(journal.get("version")) is not int or journal.get("version") != 1
+                or journal.get("id") != identity or journal.get("root") != str(self.root)
+                or journal.get("manager_id") != destination or journal.get("git_common_dir") != str(self.common)
+                or journal.get("destination") != str(self.container / destination)):
+            raise NamespaceError("Migration journal identity mismatch")
+        if marker.get("state") != "completed" or journal.get("phase") != "completed":
+            raise NamespaceError("Migration pending; inspect migrate --dry-run and --resume " + identity)
+        inventory = journal.get("inventory")
+        if (not isinstance(inventory, dict) or hashlib.sha256(json.dumps(inventory, sort_keys=True, ensure_ascii=True).encode()).hexdigest() != journal.get("source_sha256")
+                or not isinstance(inventory.get("source_entries"), list)
+                or any(not isinstance(n, str) or n in ("", ".", "..") or "/" in n for n in inventory["source_entries"])):
+            raise NamespaceError("Invalid completed migration inventory")
+        tombstone = read(self.container / "state.json")
+        state = read(self.container / destination / "state.json")
+        if (type(tombstone.get("version")) is not int or tombstone.get("version") != 2 or tombstone.get("kind") != "migration_tombstone"
+                or tombstone.get("root") != str(self.root) or tombstone.get("migration_id") != identity
+                or tombstone.get("manager_id") != destination or tombstone.get("destination") != str(self.container / destination)
+                or type(state.get("version")) is not int or state.get("version") != 2 or state.get("root") != str(self.root) or state.get("manager_id") != destination
+                or state.get("migration") or state.get("migrated_from", {}).get("migration_id") != identity):
+            raise NamespaceError("Completed migration tombstone/destination mismatch")
+        return set(inventory["source_entries"]) | {"state.json", ".migration.json", ".lock"}
 
     def validate_layout(self):
         reject_symlinks(self.home)

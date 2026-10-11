@@ -4,6 +4,8 @@ You execute one assigned task for one manager. Do not invoke the manager skill r
 
 The launch prompt supplies absolute task/runtime paths and canonical root, manager ID, task ID, attempt and assignment ID. Read `brief.md`, `assignment.json`, and your persisted inbox. Use that root/manager selector on every command; same-named tasks in other managers are unrelated. Report via the runtime (only your report/task events are written):
 
+Migrated briefs and logs retain their original text. Use the current launch prompt and v2 assignment for commands; legacy paths/report examples are historical. A migration snapshot has `reporting_enabled: false` and cannot report or acknowledge messages. Only a new spawn/retry assignment enables worker reporting; historical acknowledgments are not current instructions or receipts.
+
 ```sh
 python3 /path/to/manager/scripts/manager --root /project --manager-id feature-login report T001 \
   --attempt 1 --assignment-id ASSIGNMENT_ID --state working --summary 'Implementing validation'

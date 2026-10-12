@@ -1,18 +1,34 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-12。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`。MM-07 尚未 commit/push；後續變更以實際 status/log 為準。
+最後更新：2026-10-12。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`（已 push）。MM-08 已完成，變更尚未 commit/push；後續以實際 status/log 為準。
 
-**目前狀態：MM-02–MM-07 完成（runtime／整體 deterministic 組合驗證／文件同步），預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過；SPEC-001 為 Implementing。下一步 MM-08；真實 Agent smoke test 仍待完成。**
+**目前狀態：MM-01–MM-08／MVP-02 Done，SPEC-001 Implemented。真實 Codex 0.162.1 完成 report/ack/correction、獨立驗收與 integration 隔離；Claude Code 2.1.296 於登入後以 auto 權限模式通過同一 lifecycle。MM-07 預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過；本輪 runtime/adapters 未改。Phase 2 仍為待另立 spec 的候選。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 接續 **MM-08**：先讀 [SPEC-001](specs/001-multi-manager-isolation.md)、[MM-07 validation](reviews/MM-07-validation.md)、[runtime reference](../../skills/manager/references/runtime.md) 與下方原 MVP-02 驗收。檢查本機 provider 版本／登入／host 條件；用獨立暫存 repo、小任務及至少一個真實 provider 走完 selector/report/ack/correction/result/verify/accept 與 manager integration 隔離，記錄另一 provider 狀態。保持原生 permissions、必要用量／外部存取範圍，不操作使用者 runtime。符合原 MVP-02 條件可共用證據；全部必要驗收完成後才將 SPEC-001 標為 Implemented。Task base 在註冊時固定，先整合 prerequisites 再註冊依賴工作；已有 queued 定義需新 base 時保留舊資料、以新 ID 重新規劃。
+4. SPEC-001 已完成；先讀 [MM-08 validation](reviews/MM-08-validation.md) 與 [結果／artifact hashes](reviews/mm08-results.json)，避免重跑已完成的真實 smoke。暫存 source/state/private credentials 保留，專用 tmux server 已停止。後續候選為 P2-01 DAG Scheduler；啟動前依 README 另立 spec、必要 ADR 與具體驗收條件，先決定 committed dependency base／task 註冊時機及 worker 額度，不能只看 done 就從舊 base 啟動。Claude 或其他版本若需驗證，另記證據，不從 Codex 結果推論。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-12：MM-08／MVP-02 完成
+
+- 使用者明確同意信任暫存 fixture 後，重新 inspect 原生畫面並僅確認該 repository，保留 workspace-write／原生 permissions；沒有改全域 approval/sandbox 或啟動第二 provider。
+- 真實 Codex 0.162.1（pane 顯示 gpt-6.1-sol high）同 session／attempt 1 完成 structured working/done、2 項初版 tests；runtime send 後讀 inbox，ack message `4443d5f4ca3d4374b14561d319e52be5`，修正 trim／blank ValueError、4 項 tests、新 result/done。Worker 初次 report 參數誤用被 CLI 明確拒絕，同 session 自行修正，不需 runtime/adapter 改動。
+- 獨立 review 後，task verification `ead15e392ce04db8b10ff02b76397acc` 的 tests 與 exact-output/error assertions 均 exit 0／unchanged；accept/current 並停止 matching pane。只將 review 過的兩檔轉入 alpha integration，commit candidate `34b2d1553bd367f505dd36ad202aca5a2da66fa7`；combined run `01cc02cbc1ce4c85906733b59747b353` passed，最後 eligible true。
+- Main HEAD/index/staged/working/untracked files hashes、beta 同名 queued T001／integration tree bytes/mtime/modes、accepted source snapshot 保留；完成後再核對 accepted／combined 資格、無活 Worker，停止專用 tmux server。原 runtime/Git/private artifacts 留在 `/private/tmp/mm08-real-provider-elquvjt2`，沒有操作使用者產品專案或更新 fixture delivery target。
+- 證據：[MM-08 validation](reviews/MM-08-validation.md)、[結果／21 個 artifact hashes](reviews/mm08-results.json)；artifact copies 不含 owner credentials/raw native logs。Helper 全部流程實跑；trust 無 confirm／已確認重播各拒絕，Python 語法／artifact hashes／文件 links/anchors/fences／66 個 CLI examples／skill／diff checks 通過。Runtime/adapters 未修改，沿用 MM-07 的完整回歸，沒有重新冒稱本輪 fake tests 是真實模型驗收。
+- Claude Code 2.1.296 初次未登入；登入後同日補跑真實 lifecycle 通過（host 原生 auto 權限模式，見 [MM-08 Claude](reviews/MM-08-validation.md#claude-code-第二-provider)）；MM-08/MVP-02 共用同一證據 Done，SPEC-001 Implemented。同步入口／runtime reference／spec/task/progress。MM-08 與 Claude 補驗尚未 commit/push；下一個候選 P2-01 需另立 spec，本輪沒有自動開始。
+
+## 2026-10-12：MM-07 push 與 MM-08 開始
+
+- 使用者要求 commit/push 後接續下一步；MM-07 提交為 `c58cbf7`，已推送 `origin/docs/manager-multi-session-spec`，再接 MM-08。
+- 本機 Codex 0.162.1 已用 ChatGPT 登入，configured model 為 gpt-6.1-sol／high reasoning；Claude Code 2.1.296 未登入，沒有啟動第二 provider。原生 workspace-write 與權限檢查保留，不改全域 permissions。
+- [mm08_provider_smoke.py](reviews/mm08_provider_smoke.py) 建立 `/private/tmp/mm08-real-provider-elquvjt2`，包含隔離 Git repo、獨立 tmux socket、同名 alpha/beta T001、beta integration tree、dirty/staged/untracked 主 checkout 與 private owner credential。Codex Worker 已由 runtime spawn，停在原生 folder-trust 畫面；等待使用者明確確認，不自動通過。Main HEAD/index/files 與 beta namespace bytes/mtime 保留。
+- 尚未有真實 Worker structured completion/ack/verification/acceptance；MM-08/MVP-02 未完成，SPEC-001 維持 Implementing。證據暫存在 fixture 的 evidence/ 與 commands.jsonl，private credential 不進 repository。
 
 ## 2026-10-12：MM-07 完成與下一步
 
@@ -120,7 +136,7 @@
 
 ## 已完成的驗證
 
-本節保留 MVP Session 的歷史結果，對應 `d8b0ca5`；最新 v2 結果在上方接續紀錄及 [MM-07 validation](reviews/MM-07-validation.md)，不將 v1 歷史結果當成新功能驗收。
+本節保留 MVP Session 的歷史結果，對應 `d8b0ca5`；最新 deterministic 結果見 [MM-07 validation](reviews/MM-07-validation.md)，真實 provider 結果見 [MM-08 validation](reviews/MM-08-validation.md)，不將 v1 歷史結果當成新功能驗收。
 
 | 驗證 | 結果與範圍 |
 | --- | --- |
@@ -152,6 +168,8 @@ MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
 - **指紋不是語意審查**：Manager 仍需判斷 review／測試是否充分。忽略檔案不納入指紋；submodule 內未提交內容沒有深入指紋驗證。
 
 ## 原 MVP 驗證缺口：MVP-02 — 真實 Worker smoke test
+
+狀態：Done（2026-10-12），[MM-08 同一份真實 provider 證據](reviews/MM-08-validation.md) 已符合下方原驗收條件。Codex 與 Claude 均通過（Claude 為登入後補跑）；下方保留原任務與驗收定義供追溯。
 
 **目標**：在擴充排程前，確認真實互動式 Agent 能遵守 report／inbox／result 協定，並走完獨立驗收流程。這是依目前驗證缺口提出的建議，不是原 spec 額外定義的功能階段。
 

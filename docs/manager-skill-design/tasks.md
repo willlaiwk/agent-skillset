@@ -2,7 +2,7 @@
 
 最後更新：2026-10-12。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-12 完成 MM-07 整體組合驗證與文件同步；MM-02–MM-06 runtime 與 AC-01–AC-14 deterministic 範圍通過，SPEC-001 為 Implementing；下一步 MM-08。真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
+2026-10-12 完成 MM-08：真實 Codex 通過新路由、report/ack/correction、獨立驗收與 integration 隔離；MM-08/MVP-02 共用證據結案，SPEC-001 為 Implemented。Claude Code 2.1.296 登入後補跑同一流程通過（auto 權限模式）。Phase 2 仍為候選，啟動前需另立 spec；任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -16,14 +16,14 @@
 | MM-05 | Repository 共用交付 gate | Done | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
 | MM-06 | v1 → v2 migration 與中斷恢復 | Done | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
 | MM-07 | Skill／protocol／reference 同步與整體驗證 | Done | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
-| MM-08 | 新格式真實 provider smoke test | Todo | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
-| MVP-02 | 現有 MVP 真實 Worker smoke test | Todo | 現有 MVP | [progress 的原任務](progress.md) |
+| MM-08 | 新格式真實 provider smoke test | Done | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
+| MVP-02 | 現有 MVP 真實 Worker smoke test | Done | 現有 MVP | [MM-08 同一證據](reviews/MM-08-validation.md) |
 | P2-01 | DAG Scheduler | Todo | MVP 驗證及另立 spec | design §17、§32 |
 | P2-02 | Event Watcher | Todo | MVP 驗證及另立 spec | design §26、§32 |
 | P2-03 | Automatic Verification | Todo | MVP 驗證及另立 spec | design §24、§32 |
 | P2-04 | Routing／Retry Policy | Todo | MVP 驗證及另立 spec | design §21–22、§25、§32 |
 
-MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它，但只有實際證據符合原驗收條件後才能將兩者標為 Done，不重複執行同樣 smoke test。
+MVP-02 的原驗收條件由 MM-08 真實 provider 流程涵蓋；兩者連結同一證據結案，不重複執行同樣 smoke test。Claude 另以獨立 fixture 實際補跑，不以 Codex 結果推論。
 
 ## 任務完成條件與接續
 
@@ -100,6 +100,8 @@ MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它�
 - 目標：於獨立暫存 repo 使用真實 provider 驗證 selector、report、ack、修正、verify/accept 與 manager 整合隔離。
 - 完成條件：至少一個真實 provider 走完原 MVP-02 驗收流程及新路由；記錄版本、平台、命令、證據、第二 provider 狀態。
 - 驗證：控制必要使用量與外部存取範圍；保留 provider 原生權限檢查。遭主機限制時記錄實際阻塞，未驗證不標 Done。
-- 證據／阻塞／接續：未開始；依賴 MM-07。符合原 MVP-02 條件時連結同一證據，關閉重複缺口；所有必要驗收通過後更新 SPEC-001 為 Implemented。
+- 結果：使用者明確同意暫存 fixture 的原生信任後，Codex 0.162.1／gpt-6.1-sol high 同 session 完成 structured working/done、send/inbox ack、trim/blank error 修正、新 result、Manager review/verify/accept 與專屬 integration/combined verify。Main HEAD/index/staged/working/untracked 與 beta 同名 queued task／integration tree 保留，accepted source 未修改；停止專用 tmux server 並保留 artifacts。沒有 runtime/adapter 變更。
+- 證據：[MM-08 validation](reviews/MM-08-validation.md)、[結果與 artifact hashes](reviews/mm08-results.json)；初版 2／修正版 4 項 Worker tests、Manager 2 個 task checks、1 個 combined check 通過，current acceptance／combined eligible 再核對通過；21 份審查後證據不含 credentials/raw native logs。原 MVP-02 同一證據符合驗收，兩者 Done；SPEC-001 Implemented。
+- 邊界／接續：Claude Code 2.1.296 登入後補跑通過（host auto 權限模式；未驗證 default 手動核准模式）；原生 sandbox/permissions 保留。Helper trust 無 confirm／重播拒絕、語法／文件／skill／diff 檢查通過。MM-07 已 push `c58cbf7`，MM-08 與 Claude 補驗變更尚未 commit/push。Phase 2 需另立 spec，不自動開始。
 
 P2 任務目前只是候選。啟動前按 README 流程另立功能 spec／必要 ADR 與具體驗收條件；不以這張表代替規格。

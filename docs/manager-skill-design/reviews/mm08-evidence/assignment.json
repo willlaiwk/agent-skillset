@@ -1,0 +1,12 @@
+{
+  "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+  "manager_id": "alpha",
+  "task_id": "T001",
+  "version": 2,
+  "attempt": 1,
+  "assignment_id": "7d95e5b2049647ecbf0fd2055fafe1ee",
+  "reporting_enabled": true,
+  "worktree": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces/.manager/alpha/worktrees/T001",
+  "runtime": "/Users/willlai/workspace/will/agent-skillset/skills/manager/scripts/manager",
+  "auto_commit": false
+}

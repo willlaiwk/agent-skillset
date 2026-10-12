@@ -1,0 +1,16 @@
+[
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "message_id": "4443d5f4ca3d4374b14561d319e52be5",
+    "at": "2026-10-12T14:13:38+00:00",
+    "attempt": 1,
+    "assignment_id": "7d95e5b2049647ecbf0fd2055fafe1ee",
+    "text": "Correction: greeting must strip surrounding whitespace before formatting (e.g. '  Ada  ' -> 'Hello, Ada!'). For a blank/whitespace-only name raise ValueError('name is required'). Add unittest cases for both. First read your inbox and acknowledge this current message ID using runtime report --ack with the same launch identity. Edit only your task files, rerun tests, update result.md, report done and remain available. No commits or external access.",
+    "delivery": "pasted_unacknowledged",
+    "delivery_error": null,
+    "current_attempt": true,
+    "acknowledged": true
+  }
+]

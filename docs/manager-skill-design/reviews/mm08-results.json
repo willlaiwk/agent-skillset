@@ -1,0 +1,133 @@
+{
+  "date": "2026-10-12",
+  "status": "passed",
+  "runtime_baseline": "c58cbf7",
+  "platform": "macOS 26.6.1",
+  "python": "3.9.6",
+  "git": "2.55.0",
+  "tmux": "3.7b",
+  "provider": {
+    "name": "codex",
+    "version": "0.162.1",
+    "auth": "ChatGPT",
+    "observed_model": "gpt-6.1-sol",
+    "observed_reasoning": "high"
+  },
+  "second_provider": {
+    "name": "claude",
+    "version": "2.1.296",
+    "logged_in_at_codex_run": false,
+    "status": "passed in a later separate run; see mm08-results-claude.json"
+  },
+  "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+  "manager_id": "alpha",
+  "task_id": "T001",
+  "attempt": 1,
+  "assignment_id": "7d95e5b2049647ecbf0fd2055fafe1ee",
+  "message_id": "4443d5f4ca3d4374b14561d319e52be5",
+  "human_trust_confirmed": true,
+  "sandbox": "workspace-write",
+  "initial_unit_tests": 2,
+  "corrected_unit_tests": 4,
+  "task_verification_id": "ead15e392ce04db8b10ff02b76397acc",
+  "task_checks_passed": true,
+  "accepted": true,
+  "acceptance_eligibility": "current",
+  "combined_verification_id": "01cc02cbc1ce4c85906733b59747b353",
+  "candidate_oid": "34b2d1553bd367f505dd36ad202aca5a2da66fa7",
+  "combined_eligible": true,
+  "preservation": {
+    "main_head_index_files_preserved": true,
+    "beta_namespace_tree_preserved": true
+  },
+  "source_preserved_during_integration": true,
+  "beta_task_state": "queued",
+  "dedicated_tmux_server_stopped": true,
+  "runtime_changed": false,
+  "artifacts": {
+    "accepted.json": {
+      "sha256": "de3c6ebc5d3b4505725332b6201a5382cdb15cbc102b264f5ca232da2ca52d4c",
+      "bytes": 285
+    },
+    "assignment.json": {
+      "sha256": "02be22c98cd725129792fc2f8ef2110ed38f67b10dd789e9e297d3c53d66705c",
+      "bytes": 457
+    },
+    "correction.json": {
+      "sha256": "8753f366f7b72d6e7828298f57699bca069c3567c598d1f95f1f16a4fd2393ff",
+      "bytes": 809
+    },
+    "events.json": {
+      "sha256": "a58eec607f1c595fdd9373cbb79b107a3a0a28e4c873041bfbcfff2b0a616486",
+      "bytes": 3490
+    },
+    "final-report.json": {
+      "sha256": "ddfab6d669fd7a345230727190a2ed78a8c318eb6e8075432ab03a919310f60d",
+      "bytes": 611
+    },
+    "final-result.md": {
+      "sha256": "776947b7789123bafa05bd3a77b8d55ebb9a75a24b859a9d74782cdb5cce50dd",
+      "bytes": 974
+    },
+    "final-smoke.py": {
+      "sha256": "8e68fd611bbdb819d059b28192d3d33ac6414a465993c60056b23ec9278d02fd",
+      "bytes": 135
+    },
+    "final-test_smoke.py": {
+      "sha256": "97b64c72c2da97798eeb4fd2ed912d7fdd5c5faf5323b6e030bb179118d50859",
+      "bytes": 630
+    },
+    "inbox.json": {
+      "sha256": "c90045a969ca9149d49e5d060f116f7bb8d867daa1777a96ea804621ef661bb9",
+      "bytes": 892
+    },
+    "initial-report.json": {
+      "sha256": "489235eb1b1cc127e13fd20b0bf22c86562b51b0f8fba93819a506c87f9a4efd",
+      "bytes": 559
+    },
+    "initial-result.md": {
+      "sha256": "da81fe0e5091cf2c424fced5ca7c1c578724af6320c40912e70a44941cf44e2d",
+      "bytes": 616
+    },
+    "initial-smoke.py": {
+      "sha256": "70127f7dd36d23bbd9ed12d226d26fdc258c976030cf1cf5282adc13d35acbc7",
+      "bytes": 49
+    },
+    "initial-test_smoke.py": {
+      "sha256": "0ab3dce8bcf1b6fc3fc747bf35b5438962447be0b22a46d49b2a90705edd2b62",
+      "bytes": 296
+    },
+    "integration-review.md": {
+      "sha256": "c826367cc2fa860383919191dba0cbc9f89168b580fe0717cd0a57fd849a5567",
+      "bytes": 1191
+    },
+    "integration-unittest.log": {
+      "sha256": "f87fc9103490ae56e6a27bf3b4761f22d29150a0b0b4f21f5d2bf13b1a029c92",
+      "bytes": 297
+    },
+    "integration-verification.json": {
+      "sha256": "01788c6e4ab25001382b501c0bd7c5552be56cbf1d4f3c1ef6862fce7d151a4c",
+      "bytes": 3155
+    },
+    "review-note.md": {
+      "sha256": "86dbe2181e3fad329e92f8982f3bcf012848c9234d1b194d5f7998a4726d4949",
+      "bytes": 508
+    },
+    "task-independent.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "task-review.md": {
+      "sha256": "11148fd35d6fc04fb450707921e2aae8f4fd15dfc0bdbdfc445f7f418a89dfd8",
+      "bytes": 1232
+    },
+    "task-unittest.log": {
+      "sha256": "f87fc9103490ae56e6a27bf3b4761f22d29150a0b0b4f21f5d2bf13b1a029c92",
+      "bytes": 297
+    },
+    "task-verification.json": {
+      "sha256": "ade7931a39451030e426da21ce725cee2e3edb12221e943cedba1225e92d45f0",
+      "bytes": 1398
+    }
+  }
+}

@@ -1,0 +1,9 @@
+test_blank_name_raises (test_smoke.GreetingTests) ... ok
+test_name (test_smoke.GreetingTests) ... ok
+test_name_lin (test_smoke.GreetingTests) ... ok
+test_strips_whitespace (test_smoke.GreetingTests) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.000s
+
+OK

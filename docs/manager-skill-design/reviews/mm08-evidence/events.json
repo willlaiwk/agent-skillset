@@ -1,0 +1,113 @@
+[
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "task.queued",
+    "at": "2026-10-12T13:47:48+00:00"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.spawned",
+    "at": "2026-10-12T13:53:39+00:00",
+    "attempt": 1,
+    "pane": "%1"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.starting",
+    "at": "2026-10-12T13:53:39+00:00",
+    "attempt": 1,
+    "agent": "codex"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.working",
+    "at": "2026-10-12T14:11:51+00:00",
+    "attempt": 1
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.done",
+    "at": "2026-10-12T14:12:23+00:00",
+    "attempt": 1
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "manager.message",
+    "at": "2026-10-12T14:13:38+00:00",
+    "message_id": "4443d5f4ca3d4374b14561d319e52be5",
+    "delivery": "pasted_unacknowledged"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "task.reconciled",
+    "at": "2026-10-12T14:13:38+00:00",
+    "state": "verification",
+    "summary": "Implemented greeting and Lin unittest; python3 -m unittest -v exited 0 with 2 tests passed; result.md written"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.working",
+    "at": "2026-10-12T14:13:52+00:00",
+    "attempt": 1
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "worker.done",
+    "at": "2026-10-12T14:14:16+00:00",
+    "attempt": 1
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "task.reconciled",
+    "at": "2026-10-12T14:15:31+00:00",
+    "state": "verification",
+    "summary": "Applied acknowledged correction: strip whitespace and reject blank names; 4 tests passed with exit 0; result.md updated"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "manager.verified",
+    "at": "2026-10-12T14:15:32+00:00",
+    "passed": true,
+    "outcome": "passed",
+    "evidence": "ead15e392ce04db8b10ff02b76397acc"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "task.accepted",
+    "at": "2026-10-12T14:15:32+00:00",
+    "verification_id": "ead15e392ce04db8b10ff02b76397acc"
+  },
+  {
+    "root": "/private/tmp/mm08-real-provider-elquvjt2/repo with spaces",
+    "manager_id": "alpha",
+    "task_id": "T001",
+    "type": "task.reconciled",
+    "at": "2026-10-12T14:15:32+00:00",
+    "state": "verification",
+    "summary": "Applied acknowledged correction: strip whitespace and reject blank names; 4 tests passed with exit 0; result.md updated"
+  }
+]

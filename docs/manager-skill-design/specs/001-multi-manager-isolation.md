@@ -1,8 +1,8 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Implementing；MM-02–MM-06 runtime／MM-07 deterministic 整體組合驗證完成；真實 Agent 驗證尚未完成。
+- 狀態：Implemented；MM-02–MM-06 runtime／MM-07 deterministic 組合驗證／MM-08 真實 Codex 與 Claude Code 驗收完成。
 - 建立：2026-10-08；更新：2026-10-12。
-- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；MM-04 提交 `11644a4`；MM-05 提交 `a5521bb`；MM-06 提交 `81b2104`。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md)、[MM-04 validation](../reviews/MM-04-validation.md)、[MM-05 validation](../reviews/MM-05-validation.md)、[MM-06 validation](../reviews/MM-06-validation.md) 與 [MM-07 validation](../reviews/MM-07-validation.md)。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；MM-04 提交 `11644a4`；MM-05 提交 `a5521bb`；MM-06 提交 `81b2104`；MM-07 提交 `c58cbf7`。完成／邊界見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md)、[MM-04 validation](../reviews/MM-04-validation.md)、[MM-05 validation](../reviews/MM-05-validation.md)、[MM-06 validation](../reviews/MM-06-validation.md)、[MM-07 validation](../reviews/MM-07-validation.md) 與 [MM-08 validation](../reviews/MM-08-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
@@ -39,7 +39,7 @@ ID 規則：1–64 字元，僅小寫 ASCII 字母、數字、`-`、`_`，首字
 
 ## 4. 目標 CLI
 
-以下介面已於 MM-02–MM-06 提供，MM-07 deterministic 整體組合驗證通過；真實 Agent 驗證仍待 MM-08。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
+以下介面已於 MM-02–MM-06 提供，MM-07 deterministic 整體組合與 MM-08 真實 Codex 驗證通過；第二 provider 未登入、未驗證。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
 
 ```sh
 manager --root /project init
@@ -239,7 +239,7 @@ Validated 核對 counts、task/dependency/attempt、ack 歷史、所有內容、
 
 V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一般命令對 v1 回報 migration 指引、對不支援版本明確報錯；完成 tombstone 與 pending journal 有獨立診斷。Readonly 操作不得偷偷 initialize 或修復。
 
-各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 已完成整體 deterministic 驗證與文件同步。現行工作樹已提供 MM-02–MM-06；MM-08 真實 provider 待驗證，完整功能仍在 Implementing；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../../skills/manager/references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
+各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 完成整體 deterministic 驗證與文件同步，MM-08 完成 AC-14 必要的真實 Codex 驗收及第二 provider 狀態記錄，功能為 Implemented；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../../skills/manager/references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
 
 ## 10. 驗收情境
 
@@ -269,12 +269,13 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)，MM-05 的 AC-08–AC-09 範圍見 [交付 gate 驗證](../reviews/MM-05-validation.md)，MM-06 的 AC-10–AC-13 範圍見 [migration 驗證](../reviews/MM-06-validation.md)。MM-07 的 [整體組合驗證及 AC 對照](../reviews/MM-07-validation.md) 涵蓋 deterministic 範圍；AC-14 真實 provider 部分待 MM-08，不以 fake provider 宣稱整體驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)，MM-05 的 AC-08–AC-09 範圍見 [交付 gate 驗證](../reviews/MM-05-validation.md)，MM-06 的 AC-10–AC-13 範圍見 [migration 驗證](../reviews/MM-06-validation.md)。MM-07 的 [整體組合驗證及 AC 對照](../reviews/MM-07-validation.md) 涵蓋 deterministic 範圍；[MM-08](../reviews/MM-08-validation.md) 提供真實 Codex 與 Claude Code 的 AC-14 lifecycle／integration 隔離證據；Claude 僅驗證 host 原生 auto 權限模式，不把 fake provider 或未執行的組態宣稱通過。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-12 | MM-08：真實 Codex 新路由／structured report／send/ack/correction／result／Manager verification/acceptance／integration 隔離通過；保存版本／21 份 artifact hashes／第二 provider 未登入狀態；MVP-02 同一證據結案，改 Implemented；runtime/adapters 未變 |
 | 2026-10-12 | MM-07：migration／重新驗收／依賴／handoff／競爭交付與長 checks 組合回歸、AC deterministic 證據對照及 SKILL/protocol/reference/CLI 範例同步；澄清現有 task 註冊固定 base 與同值 migration selector，未增加 runtime API；真實 provider 待 MM-08，維持 Implementing |
 | 2026-10-11 | MM-06：explicit migration／零寫入 dry-run、backup/object pins/pack、舊新 refs／Git move、歷史資格失效、phase/intent forward resume／tombstone 與 AC-10–AC-13 驗證；整體組合／真實 Agent 待後續，維持 Implementing |
 | 2026-10-10 | MM-05：deliver／common maintenance-delivery gate、final evidence/inventory recheck、expected-OID transaction／receipt、中斷恢復與永久成功／失敗診斷；維持 Implementing，migration 與真實 Agent 待後續 |

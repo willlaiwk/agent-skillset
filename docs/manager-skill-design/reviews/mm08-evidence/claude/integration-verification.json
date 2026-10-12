@@ -1,0 +1,88 @@
+{
+  "root": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces",
+  "manager_id": "alpha",
+  "task_id": null,
+  "version": 1,
+  "resource": "integration",
+  "id": "0482782b866b4528b774513186f8cf7e",
+  "at": "2026-10-12T14:49:33+00:00",
+  "generation": 1,
+  "passed": true,
+  "outcome": "passed",
+  "unchanged": true,
+  "snapshot": {
+    "candidate": {
+      "ref": "refs/heads/manager/54f465517106/alpha/integration",
+      "oid": "d92c9499fe8d98a5445c643fa39e9c6042e25bbf",
+      "base": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783",
+      "worktree": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces/.manager/alpha/integration",
+      "submodules": ""
+    },
+    "target": {
+      "ref": "refs/heads/release-smoke",
+      "oid": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783"
+    },
+    "sources": [
+      {
+        "task_id": "T001",
+        "attempt": 1,
+        "assignment_id": "74aab1e376264db0a29d85c3f0c36e22",
+        "verification_id": "210f6a8adbe342d4903e26b88b1a3a75",
+        "head": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783",
+        "fingerprint": "8047651914c8a4e90e0619e136f641cd645333b140df2807d871c53c6b166175",
+        "acceptance": {
+          "root": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces",
+          "manager_id": "alpha",
+          "task_id": "T001",
+          "attempt": 1,
+          "assignment_id": "74aab1e376264db0a29d85c3f0c36e22",
+          "at": "2026-10-12T14:49:21+00:00",
+          "verification_id": "210f6a8adbe342d4903e26b88b1a3a75"
+        }
+      }
+    ]
+  },
+  "after_snapshot": {
+    "candidate": {
+      "ref": "refs/heads/manager/54f465517106/alpha/integration",
+      "oid": "d92c9499fe8d98a5445c643fa39e9c6042e25bbf",
+      "base": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783",
+      "worktree": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces/.manager/alpha/integration",
+      "submodules": ""
+    },
+    "target": {
+      "ref": "refs/heads/release-smoke",
+      "oid": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783"
+    },
+    "sources": [
+      {
+        "task_id": "T001",
+        "attempt": 1,
+        "assignment_id": "74aab1e376264db0a29d85c3f0c36e22",
+        "verification_id": "210f6a8adbe342d4903e26b88b1a3a75",
+        "head": "3addd3546e7f5e8e3e2b3df547d7f2fdead46783",
+        "fingerprint": "8047651914c8a4e90e0619e136f641cd645333b140df2807d871c53c6b166175",
+        "acceptance": {
+          "root": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces",
+          "manager_id": "alpha",
+          "task_id": "T001",
+          "attempt": 1,
+          "assignment_id": "74aab1e376264db0a29d85c3f0c36e22",
+          "at": "2026-10-12T14:49:21+00:00",
+          "verification_id": "210f6a8adbe342d4903e26b88b1a3a75"
+        }
+      }
+    ]
+  },
+  "review": "integration-verification/0482782b866b4528b774513186f8cf7e/review.md",
+  "review_sha256": "fd2d3be0455a236174c6ba518fb4aee95936708bf8949068c5a37847d7323b0a",
+  "checks": [
+    {
+      "command": "python3 -B -m unittest -v",
+      "exit_code": 0,
+      "timed_out": false,
+      "log": "integration-verification/0482782b866b4528b774513186f8cf7e/1.log"
+    }
+  ],
+  "diagnostic_error": null
+}

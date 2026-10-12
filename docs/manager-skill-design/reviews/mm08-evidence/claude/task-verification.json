@@ -1,0 +1,31 @@
+{
+  "root": "/private/tmp/mm08-real-provider-kzecy5sk/repo with spaces",
+  "manager_id": "alpha",
+  "task_id": "T001",
+  "id": "210f6a8adbe342d4903e26b88b1a3a75",
+  "at": "2026-10-12T14:49:21+00:00",
+  "generation": 1,
+  "attempt": 1,
+  "assignment_id": "74aab1e376264db0a29d85c3f0c36e22",
+  "passed": true,
+  "outcome": "passed",
+  "unchanged": true,
+  "fingerprint": "8047651914c8a4e90e0619e136f641cd645333b140df2807d871c53c6b166175",
+  "review": "tasks/T001/verification/210f6a8adbe342d4903e26b88b1a3a75/review.md",
+  "review_sha256": "2283fd74fd0f02c68637bc7dc20716ee4e4f0d562bea8e3025733a1ef947ff76",
+  "checks": [
+    {
+      "command": "python3 -B -m unittest -v",
+      "exit_code": 0,
+      "timed_out": false,
+      "log": "tasks/T001/verification/210f6a8adbe342d4903e26b88b1a3a75/1.log"
+    },
+    {
+      "command": "/Library/Developer/CommandLineTools/usr/bin/python3 -B -c 'from smoke import greeting; assert greeting('\"'\"'  Ada  '\"'\"') == '\"'\"'Hello, Ada!'\"'\"'; assert greeting('\"'\"'Lin'\"'\"') == '\"'\"'Hello, Lin!'\"'\"'\ntry: greeting('\"'\"'   '\"'\"')\nexcept ValueError as exc: assert str(exc) == '\"'\"'name is required'\"'\"'\nelse: raise AssertionError('\"'\"'blank name was accepted'\"'\"')\n'",
+      "exit_code": 0,
+      "timed_out": false,
+      "log": "tasks/T001/verification/210f6a8adbe342d4903e26b88b1a3a75/2.log"
+    }
+  ],
+  "diagnostic_error": null
+}

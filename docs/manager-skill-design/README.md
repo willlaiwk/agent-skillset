@@ -1,6 +1,6 @@
 # Manager Skill — 規格、決策與開發入口
 
-最後更新：2026-10-11。
+最後更新：2026-10-12。
 
 這個目錄管理 manager skill 本身的設計與開發。使用 skill 管理產品專案時產生的 `.manager/` 是執行資料，兩者不共用任務狀態。
 
@@ -23,7 +23,7 @@
 
 | ID | 主題 | 狀態 | 相關任務／決策 |
 | --- | --- | --- | --- |
-| SPEC-001 | [多 manager 隔離、整合與舊格式遷移](specs/001-multi-manager-isolation.md) | Implementing；namespace／主控／整合／交付／migration 已實作 | MM-01–MM-06 Done；MM-07–MM-08 Todo |
+| SPEC-001 | [多 manager 隔離、整合與舊格式遷移](specs/001-multi-manager-isolation.md) | Implementing；runtime／deterministic 組合驗證完成，真實 provider 待驗證 | MM-01–MM-07 Done；MM-08 Todo |
 
 | ID | 決策 | 狀態 |
 | --- | --- | --- |
@@ -60,4 +60,4 @@ Task 狀態使用 `Todo`、`In progress`、`Blocked`、`Done`、`Cancelled`。�
 3. 只讀當前任務相關的 spec、ADR、`design.md` 章節與 skill/runtime 參考。
 4. 接續後更新 task 與 progress；未跑的測試保持未驗證。
 
-2026-10-11 完成 MM-06 v1 migration／forward resume，證據見 [MM-06 validation](reviews/MM-06-validation.md)；先前 namespace／主控／整合／交付證據見 [MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-05 已提交為 `a5521bb`；MM-06 提交以 `feat: add recoverable v1 manager migration` 識別，hash 以 Git log 為準。下一步為 MM-07 整體組合驗證與文件同步；SPEC-001 維持 Implementing，真實 Agent／MM-08／MVP-02 驗證仍待後續。
+2026-10-12 完成 MM-07 整體組合驗證與文件同步，證據及 AC 對照見 [MM-07 validation](reviews/MM-07-validation.md)；預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過，均只用假的 Worker。先前 migration／namespace／主控／整合／交付證據見 [MM-06](reviews/MM-06-validation.md)、[MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-06 提交為 `81b2104`；MM-07 尚未 commit/push，實際 Git status/log 為準。下一步為 MM-08；SPEC-001 維持 Implementing，真實 Agent／MM-08／MVP-02 驗證仍待後續。

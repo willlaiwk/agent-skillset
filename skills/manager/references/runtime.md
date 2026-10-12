@@ -1,8 +1,8 @@
-# Runtime reference (v2 namespace, ownership, integration, delivery and migration, MM-06)
+# Runtime reference (v2 namespace, ownership, integration, delivery and migration)
 
 ## Current support
 
-The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Isolated integration init/status/verify, combined evidence, a shared local delivery gate and explicit v1 migration are available. Overall composition and real-provider validation are still pending; the complete multi-manager design remains in implementation.
+The CLI creates isolated manager namespaces, routes workers by complete launch identity, lists managers, and provides read-only inspection. Explicit owner claim/release/takeover, recoverable owner journals, task operation locks and long-verification fencing are available. Isolated integration init/status/verify, combined evidence, a shared local delivery gate and explicit v1 migration are available. Deterministic composition is validated through migration, fresh acceptance, dependent work, handoff and competing delivery. Real-provider validation remains pending; the complete multi-manager design remains in implementation.
 
 Python 3.9+ and Git on a POSIX host are required. Starting workers additionally requires tmux and an installed, authenticated `codex` or `claude`. Default operation uses the Python standard library; YAML `.manager.yml` requires PyYAML in the same interpreter. JSON syntax in that file needs no additional dependency. Missing YAML support is an explicit error, never silently ignored.
 
@@ -50,6 +50,8 @@ manager --root /project --manager-id feature-login owner takeover \
 
 Owner transitions journal an operation ID before committing owner state, write and sync the exclusive private credential before activation, then record the corresponding event under that ID. `owner status` exposes journal state and credential validity without repairs. If interrupted before activation, the credential stays invalid and must not be reused/overwritten; use a fresh path. If activation succeeded but event writing was interrupted, a valid owner's next management command/reconcile repairs the event exactly once. A subsequent claim/takeover also repairs prior owner journals before transferring control. Generation never resets; an uncommitted credential is diagnosed as `not_committed`, never activated by recovery.
 
+The following management examples illustrate individual commands rather than one sequential lifecycle. After handoff, use the new credential path on every subsequent write.
+
 ```sh
 manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
   task --id T001 --title 'Inspect auth flow' --kind research --brief /tmp/T001.md
@@ -72,7 +74,7 @@ manager --root /project --manager-id feature-login --owner-file /tmp/session-a.o
   escalate T002 --reason 'Product behavior needs user input'
 ```
 
-All commands return JSON; errors and failed verification exit nonzero (argument syntax errors use argparse diagnostics). `task` registers without launching. `spawn` can register and launch or start a queued task; it cannot overwrite existing definitions. Dependencies must already exist and be manager-accepted, with current eligibility, before launch. Their code is not automatically transferred into the next worker's committed base. There is no automatic scheduler.
+All commands return JSON; errors and failed verification exit nonzero (argument syntax errors use argparse diagnostics). `task` registers without launching. `spawn` can register and launch or start a queued task; it cannot overwrite existing definitions. Registration resolves `--base` to a commit immediately, including for queued tasks. To include newly integrated prerequisites, prepare the committed integration base before registering the dependent task. An existing queued definition, including a migrated one, retains its recorded base; there is no task-edit command. If replanning needs another base, register a fresh task ID and retain the old task/history. Dependencies must already exist and be manager-accepted, with current eligibility, before launch. Their code is not automatically transferred into the next worker's committed base. There is no automatic scheduler.
 
 Writes recheck the credential inside the per-manager registry lock. Short external calls have bounded timeouts and retain launch/message/stop/retry/accept intents for diagnosis. Task management uses a nonblocking `.operation.lock` before the registry lock; a busy target fails immediately. Reconcile skips busy tasks and reports `operation_busy`, while other tasks can progress. Initialization/shared exclude and worktree creation additionally use the common Git maintenance lock. Lock order is common maintenance → task operation (sorted resource paths) → registry → task report; common/registry/report waits are bounded. Read commands do not create/acquire write locks.
 
@@ -195,6 +197,33 @@ Old task refs remain at their original OIDs. New `manager/{project-key}/{ID}/tas
 All current acceptance and verification fields are cleared. Old accepted evidence becomes `accepted_history` with hashes. Valid completed results become `verification` with `reverify_required`; interrupted or damaged completion becomes `failed`. Existing failed/cancelled tasks stay so, while queued tasks remain queued. Historical acknowledgments remain visible but current acks are empty. Converted `origin: migration` assignments have `reporting_enabled: false`: managers can independently verify retained valid completion, but workers cannot report/ack with that identity. Only a new spawn/retry enables reporting with a fresh assignment. Dependency/integration gates require new current acceptance; old prompts and provider conversations cannot resume as v2 workers.
 
 Completion writes a v2 migration tombstone to the old `.manager/state.json`, releases the new owner, and binds marker/journal/destination. Old v1 init/load fail; old paths do not route reports into v2. After any interruption, resume only the recorded migration ID with the same quiescence assertion. Changes to source, moved trees, refs, backup or converted artifacts cause an error with both sides preserved. No automatic rollback, cleanup, repair or ref adoption runs. Once completed, repeating `migrate` for the same destination is a zero-write no-op after verifying identity and immutable backup/pins; it permits subsequent legitimate v2 task changes. Preserve all history and backup refs for deliberate recovery.
+
+### Continue from migrated acceptance to dependent work
+
+After migration and explicit claim, inspect the retained result/diff and write a new independent review. This example assumes `T001` has a valid migrated completion, `refs/heads/release` already exists, and `T004` is a fresh task ID. Replace the uppercase placeholders with the paths/ref returned by the CLI and use checks appropriate to the project.
+
+```sh
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  verify T001 --review /tmp/T001-review.md --command 'python3 -m unittest'
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json accept T001
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  integration init --base refs/heads/release
+# In INTEGRATION_TREE, transfer the reviewed accepted snapshot and commit it.
+# A cherry-pick alone does not include dirty/staged/untracked accepted content.
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  spawn --id T004 --title 'Dependent change' --brief /tmp/T004.md \
+  --depends-on T001 --base INTEGRATION_BRANCH
+# Supervise T004, review its result, then verify and accept its unchanged snapshot.
+# Integrate T004 in INTEGRATION_TREE and commit the combined candidate.
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  integration verify --target refs/heads/release --source T001 --source T004 \
+  --review /tmp/combined-review.md --command 'python3 -m unittest'
+manager --root /project --manager-id feature-login integration status --verification COMBINED_RUN_ID
+manager --root /project --manager-id feature-login --owner-file /tmp/session-a.owner.json \
+  deliver --verification COMBINED_RUN_ID
+```
+
+Delivery requires existing authorization and an un-checked-out target. If another manager delivers first, integrate its latest target into this manager's candidate, resolve any conflicts, commit and run a new combined verification. A handoff uses a fresh owner credential for subsequent writes; unchanged completed evidence can survive it. A run still checking at handoff is fenced and needs a new verification after reconcile. Migration reruns remain no-ops after these v2 changes; they do not reset tasks, ownership or delivery history.
 
 ## Worker identity and messages
 

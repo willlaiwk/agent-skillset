@@ -8,7 +8,7 @@ As the valid owner, write `.manager/{ID}/plan.md` with the requested outcome, sc
 
 Create task briefs using the template. Dependencies must reference previously registered tasks, which keeps the MVP graph acyclic. `task` registers queued work; `spawn` starts work only after dependencies are manager-accepted. The manager schedules runnable tasks itself; there is no background scheduler.
 
-Every worker gets a private worktree. Worktrees are created from `--base` (default current committed `HEAD`), not uncommitted changes. A dependent worker does not automatically receive a dependency's branch: prepare a committed integration ref or pass an explicit base containing the required commits. Record that choice in the plan.
+Every worker gets a private worktree. Registration resolves `--base` (default current committed `HEAD`) to a fixed commit, not uncommitted changes. A dependent worker does not automatically receive a dependency's branch: prepare a committed integration ref before registering it and pass that ref as its base. Existing queued definitions keep their base, including after migration; use a fresh task ID when replanning requires a different base. Record that choice and the retained task's disposition in the plan. See the [migration-to-delivery example](runtime.md#continue-from-migrated-acceptance-to-dependent-work).
 
 ## Supervision loop
 

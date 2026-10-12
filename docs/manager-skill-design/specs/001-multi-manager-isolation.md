@@ -1,8 +1,8 @@
 # SPEC-001 — 多 Manager 隔離、整合與遷移
 
-- 狀態：Implementing；MM-02–MM-06 runtime 已實作；整體組合與真實 Agent 驗證尚未完成。
-- 建立：2026-10-08；更新：2026-10-11。
-- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；MM-04 提交 `11644a4`；MM-05 提交 `a5521bb`；MM-06 提交以 `feat: add recoverable v1 manager migration` 識別。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md)、[MM-04 validation](../reviews/MM-04-validation.md)、[MM-05 validation](../reviews/MM-05-validation.md) 與 [MM-06 validation](../reviews/MM-06-validation.md)。
+- 狀態：Implementing；MM-02–MM-06 runtime／MM-07 deterministic 整體組合驗證完成；真實 Agent 驗證尚未完成。
+- 建立：2026-10-08；更新：2026-10-12。
+- 實作基線：MVP `d8b0ca5`（v1）；契約定案 `68cc99f`。MM-02 提交 `385e331`；MM-03 提交 `b302ee8`；MM-04 提交 `11644a4`；MM-05 提交 `a5521bb`；MM-06 提交 `81b2104`。完成／缺口見 [MM-02 validation](../reviews/MM-02-validation.md)、[MM-03 validation](../reviews/MM-03-validation.md)、[MM-04 validation](../reviews/MM-04-validation.md)、[MM-05 validation](../reviews/MM-05-validation.md)、[MM-06 validation](../reviews/MM-06-validation.md) 與 [MM-07 validation](../reviews/MM-07-validation.md)。
 - 決策：[ADR-0002](../adr/0002-manager-identity.md)、[ADR-0003](../adr/0003-isolated-integration.md)、[ADR-0004](../adr/0004-runtime-migration.md)，均為 Accepted（設計採用）。
 - 任務：[MM-01–MM-08](../tasks.md)；契約檢查：[MM-01 review](../reviews/MM-01-contract-review.md)。
 
@@ -39,7 +39,7 @@ ID 規則：1–64 字元，僅小寫 ASCII 字母、數字、`-`、`_`，首字
 
 ## 4. 目標 CLI
 
-以下介面已於 MM-02–MM-06 提供；整體組合與真實 Agent 驗證仍待後續。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
+以下介面已於 MM-02–MM-06 提供，MM-07 deterministic 整體組合驗證通過；真實 Agent 驗證仍待 MM-08。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
 
 ```sh
 manager --root /project init
@@ -62,7 +62,7 @@ manager --root /project migrate --manager-id legacy --expect-source SOURCE_SHA25
 manager --root /project migrate --manager-id legacy --resume MIGRATION_ID --source-quiesced
 ```
 
-`--manager-id` 是 selector；既有 `--id` 與 positional ID 保持代表 task。`migrate` 的 ID 是目的地，必須明確提供；不能同時另給全域 selector。`managers` 不需 selector，純讀取各 namespace 的 ID、版本與 owner 摘要；損壞項目逐項列出，不自動修復。
+`--manager-id` 是 selector；既有 `--id` 與 positional ID 保持代表 task。`migrate` 的 ID 是目的地，必須明確提供；可放全域或子命令後，兩處同時提供時必須一致。`managers` 不需 selector，純讀取各 namespace 的 ID、版本與 owner 摘要；損壞項目逐項列出，不自動修復。
 
 管理寫入使用 `--owner-file`，可由 `MANAGER_OWNER_FILE` 指定同一 credential 路徑；明確參數優先。Worker 不繼承這個環境變數／credential。`report` 的 `--assignment-id` 可由 launch environment 的 `MANAGER_WORKER_ASSIGNMENT` 提供，兩者同時提供時須一致；缺少時拒絕。
 
@@ -161,7 +161,7 @@ Common control 目錄固定為 `<canonical-git-common-dir>/manager-runtime/`。�
 
 `integration.json` 使用 version 1 與完整 root／manager/resource identity，保存 initializing／ready、creation ID、branch/worktree/base、current verification、owner 提交的 run/hash index 與 pending operation。Git 建立前先寫 intent；中斷後只在尚無 side effect，或 matching registration/ref/tree 仍乾淨且停在 original base 時接續。Unknown ref/tree 或 changed partial artifacts 不採用／reset。Operation lock 固定放在 home `.integration.operation.lock`，避免 lock 檔被算成 candidate untracked 成果。
 
-Manager 依既有授權，在自己的 integration tree 使用 Git 整合已接受且目前 snapshot 仍相符的 task 成果。Task acceptance 可含 dirty 成果；Manager 將已 review 的 diff／task-owned untracked 成果帶入 integration tree 並刻意提交，保持 accepted task tree 原樣，不能自動 stage 使用者檔案。依賴 launch 也重查 source verification／acceptance／fingerprint；來源改變時不得憑 current flag 啟動。依賴 task 的 code 透過明確已提交 integration ref／base 傳給下一個 worker，不把 `done` 當 code 已存在。
+Manager 依既有授權，在自己的 integration tree 使用 Git 整合已接受且目前 snapshot 仍相符的 task 成果。Task acceptance 可含 dirty 成果；Manager 將已 review 的 diff／task-owned untracked 成果帶入 integration tree 並刻意提交，保持 accepted task tree 原樣，不能自動 stage 使用者檔案。依賴 launch 也重查 source verification／acceptance／fingerprint；來源改變時不得憑 current flag 啟動。依賴 task 的 code 透過明確已提交 integration ref／base 傳給下一個 worker，不把 `done` 當 code 已存在。現行 runtime 在 task 註冊時解析固定 base commit；須先整合 prerequisites 再註冊依賴 task。Migration 保留 queued task 原 base，沒有 task-edit API；需要新 base 時另登錄新 task ID，保留舊任務與歷史並記錄接續決策。
 
 `integration verify --target REF --source TASK --review FILE --command CMD` 保存不可變 run ID、target ref/OID、candidate ref/OID、source acceptance、review hash、combined commands/結果與 candidate snapshot。`--source` 可重複、至少一項且必須為同 manager 的 current accepted task；保存各 source attempt、accepted verification ID、HEAD 與 fingerprint，review 說明來源如何對應 candidate。Runtime 核對來源未改動，Manager 的 review 負責確認合併充分性。Target 必須為第 7.2 節定義的既有 full direct 本地分支 ref，拒絕 manager/runtime/backup namespace。Verify 可對已 checkout 的分支準備候選證據但不更新它；是否可交付的 worktree inventory 由 §7.2 final gate 重新核對，仍拒絕任何 checked-out target。candidate 必須乾淨、無 staged/untracked 成果或進行中的 Git 操作，且 target OID 是 candidate 的 ancestor。Ignored cache 不當作交付內容；submodule 有 dirty/untracked 內容或不一致的 revision 時拒絕此版交付驗證。
 
@@ -239,7 +239,7 @@ Validated 核對 counts、task/dependency/attempt、ack 歷史、所有內容、
 
 V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一般命令對 v1 回報 migration 指引、對不支援版本明確報錯；完成 tombstone 與 pending journal 有獨立診斷。Readonly 操作不得偷偷 initialize 或修復。
 
-各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 再整體驗證。現行工作樹已提供 MM-02–MM-06，完整功能仍在 Implementing；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../../skills/manager/references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
+各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 已完成整體 deterministic 驗證與文件同步。現行工作樹已提供 MM-02–MM-06；MM-08 真實 provider 待驗證，完整功能仍在 Implementing；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../../skills/manager/references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
 
 ## 10. 驗收情境
 
@@ -269,12 +269,13 @@ V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一�
 | Q-03 | §8.2–8.3：保留舊 ref、新 namespaced ref、完整 backup/journal、history 與 reverify_required、只 forward resume | MM-06 故障注入與 dirty/staged/ignored fixture；不提供自動 rollback |
 | Q-04 | §8.1：顯式 source-quiesced＋source hash＋locks/inventory；live 或無法確認的 writer 阻擋，migration 不自動停止 | MM-06 檢查 mixed-version 邊界；不以靜默／worker done 證明舊 Session 離線 |
 
-MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)，MM-05 的 AC-08–AC-09 範圍見 [交付 gate 驗證](../reviews/MM-05-validation.md)，MM-06 的 AC-10–AC-13 範圍見 [migration 驗證](../reviews/MM-06-validation.md)。MM-07 整體組合與 MM-08 真實 provider 的 AC 仍待完成，不以 fake provider 宣稱整體驗收。
+MM-01 的流程檢查結果在 [contract review](../reviews/MM-01-contract-review.md)。MM-02 的 AC-01–AC-05 範圍另有 [實作驗證](../reviews/MM-02-validation.md)，MM-03 的 AC-06 範圍見 [主控交接驗證](../reviews/MM-03-validation.md)，MM-04 的 AC-07 範圍見 [整合驗證](../reviews/MM-04-validation.md)，MM-05 的 AC-08–AC-09 範圍見 [交付 gate 驗證](../reviews/MM-05-validation.md)，MM-06 的 AC-10–AC-13 範圍見 [migration 驗證](../reviews/MM-06-validation.md)。MM-07 的 [整體組合驗證及 AC 對照](../reviews/MM-07-validation.md) 涵蓋 deterministic 範圍；AC-14 真實 provider 部分待 MM-08，不以 fake provider 宣稱整體驗收。
 
 ## 12. 修訂記錄
 
 | 日期 | 變更 |
 | --- | --- |
+| 2026-10-12 | MM-07：migration／重新驗收／依賴／handoff／競爭交付與長 checks 組合回歸、AC deterministic 證據對照及 SKILL/protocol/reference/CLI 範例同步；澄清現有 task 註冊固定 base 與同值 migration selector，未增加 runtime API；真實 provider 待 MM-08，維持 Implementing |
 | 2026-10-11 | MM-06：explicit migration／零寫入 dry-run、backup/object pins/pack、舊新 refs／Git move、歷史資格失效、phase/intent forward resume／tombstone 與 AC-10–AC-13 驗證；整體組合／真實 Agent 待後續，維持 Implementing |
 | 2026-10-10 | MM-05：deliver／common maintenance-delivery gate、final evidence/inventory recheck、expected-OID transaction／receipt、中斷恢復與永久成功／失敗診斷；維持 Implementing，migration 與真實 Agent 待後續 |
 | 2026-10-10 | MM-04：integration init/status/verify、source acceptance／combined snapshot／owner-committed hash index、隔離及中斷／fencing 驗證；clarify verify preparation 與 MM-05 checkout/delivery gate，尚未實作交付／migration／真實 Agent |

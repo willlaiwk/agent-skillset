@@ -47,7 +47,7 @@ verify the integrated result before reporting completion.
 
 Manager runtime data is stored in `.manager/{manager-id}/` at the managed project's Git root. Initialization uses shared Git `info/exclude` and preserves the user's `.gitignore`. Save the returned ID, explicitly claim ownership, and use that selector and private owner credential for management writes. Workers start from committed Git refs; relevant uncommitted changes must be accounted for in the task plan.
 
-The current v2 implementation is staged: manager namespaces, owner handoff, long-verification fencing, isolated integration/combined verification, the local delivery gate, and explicit v1 migration with backup and forward resume are available. Overall composition and real-provider validation are still pending. Delivery uses existing user/repository authorization and provides no push or PR creation. Migration requires a zero-write preview, matching source hash and quiesced legacy writers; historical acceptance requires fresh verification. See the [migration workflow](skills/manager/references/runtime.md#explicit-v1-migration).
+The current v2 implementation is staged: manager namespaces, owner handoff, long-verification fencing, isolated integration/combined verification, the local delivery gate, and explicit v1 migration with backup and forward resume are available. Deterministic composition is validated; real-provider validation remains pending. Delivery uses existing user/repository authorization and provides no push or PR creation. Migration requires a zero-write preview, matching source hash and quiesced legacy writers; historical acceptance requires fresh verification. See the [migration workflow](skills/manager/references/runtime.md#explicit-v1-migration).
 
 ## Development
 

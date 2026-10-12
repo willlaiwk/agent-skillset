@@ -1,8 +1,8 @@
 # Manager Skill — 開發任務
 
-最後更新：2026-10-11。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
+最後更新：2026-10-12。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-11 完成 MM-02–MM-06 namespace／主控／整合／交付／migration，SPEC-001 為 Implementing；下一步 MM-07。MM-07–MM-08 尚未開始，真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
+2026-10-12 完成 MM-07 整體組合驗證與文件同步；MM-02–MM-06 runtime 與 AC-01–AC-14 deterministic 範圍通過，SPEC-001 為 Implementing；下一步 MM-08。真實 Agent 驗證仍待後續完成。任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -15,7 +15,7 @@
 | MM-04 | 每 manager 的整合工作樹與證據 | Done | MM-02、MM-03 | SPEC-001 §7.1；ADR-0003 |
 | MM-05 | Repository 共用交付 gate | Done | MM-03、MM-04 | SPEC-001 §7.2；ADR-0003 |
 | MM-06 | v1 → v2 migration 與中斷恢復 | Done | MM-02、MM-03、MM-04 | SPEC-001 §8–9；ADR-0004 |
-| MM-07 | Skill／protocol／reference 同步與整體驗證 | Todo | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
+| MM-07 | Skill／protocol／reference 同步與整體驗證 | Done | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
 | MM-08 | 新格式真實 provider smoke test | Todo | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
 | MVP-02 | 現有 MVP 真實 Worker smoke test | Todo | 現有 MVP | [progress 的原任務](progress.md) |
 | P2-01 | DAG Scheduler | Todo | MVP 驗證及另立 spec | design §17、§32 |
@@ -91,7 +91,9 @@ MVP-02 保留為原驗證缺口；本輪先實作 SPEC-001，MM-08 可涵蓋它�
 - 目標：同步 SKILL／protocol／runtime reference／範例，完整驗證 namespace、主控、整合與 migration 合用。
 - 完成條件：AC-01–AC-14 的 deterministic 範圍有結果；舊單 manager 生命週期回歸通過；spec/task/progress 不誇大真實 provider 驗證。
 - 驗證：既有及新行為測試、專用真實 tmux fixture、skill 格式與文件連結；實作完成前各 task 必須同步其必要 runtime 使用說明，不能全部拖到此步。
-- 證據／阻塞／接續：未開始；依賴 MM-05、MM-06。此步完成後 SPEC-001 仍為 Implementing；MM-08 完成必要真實 provider 驗證後才標為 Implemented。
+- 結果：補 migration → fresh acceptance／dependent committed base → correction/ack → release/claim → 競爭 target／真實 conflict／重新驗證／receipt 的完整流程；長 combined checks 中 takeover／retry/new identity／跨 manager report 拒絕／獨立額度及 delivery 合用。另驗 global/subcommand migration selector；同步 SKILL/protocol/reference/template/入口，澄清註冊固定 base 與 queued task 無 edit API 的限制。
+- 證據：[MM-07 validation](reviews/MM-07-validation.md) 含 AC-01–AC-14 對照；最終預設 107 項（106 通過、1 real-only skip，312.805s），真實 tmux 107 項全通過（342.166s）。YAML 成功路徑 1 項、skill/UI YAML、10 份 Python 語法／可執行權限、Markdown links/anchors/fences、66 個現行 CLI 範例 parser 與 diff check 通過；只有假的 Worker。
+- 接續：MM-08；SPEC-001 維持 Implementing，MVP-02/MM-08 真實 provider 缺口不關閉。沒有操作使用者 runtime、commit/push；Git status/log 為準。
 
 ### MM-08 — 真實 provider smoke test
 

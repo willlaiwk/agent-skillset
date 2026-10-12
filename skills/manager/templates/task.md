@@ -13,7 +13,7 @@
 {{Compatibility, behavior, permissions, and commit policy}}
 
 ## Dependencies
-{{Task IDs, committed base ref containing prerequisites, and required artifacts}}
+{{Same-manager task IDs, committed base ref containing prerequisites before registration, and required artifacts}}
 
 ## Acceptance criteria
 {{Observable conditions the manager will check}}

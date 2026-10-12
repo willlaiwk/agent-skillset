@@ -664,17 +664,17 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse((self.root / ".manager/unsafe-exclude").exists())
         self.assertEqual(outside_exclude.read_bytes(), exclude_before)
 
-    def takeover(self, generation=None, reason="Explicit fixture handoff"):
+    def takeover(self, generation=None, reason="Explicit fixture handoff", manager="alpha"):
         if generation is None:
-            generation = self.call("owner", "status")["generation"]
+            generation = self.call("owner", "status", manager=manager)["generation"]
         credential = self.directory / ("takeover-" + str(generation) + ".json")
         result = self.call("owner", "takeover", "--expect-generation", str(generation),
                            "--reason", reason, "--session-id", "successor",
-                           "--credential-file", str(credential), owner=False)
-        self.credentials["alpha"] = credential
+                           "--credential-file", str(credential), owner=False, manager=manager)
+        self.credentials[manager] = credential
         return result
 
-    def start_verify(self, action=None):
+    def start_verify(self, action=None, manager="alpha"):
         started, finish = self.directory / "started", self.directory / "finish"
         code = ("from pathlib import Path; import time, os; "
                 "assert 'MANAGER_OWNER_FILE' not in os.environ; "
@@ -684,9 +684,9 @@ class ManagerTests(unittest.TestCase):
                 " assert time.monotonic()<deadline; time.sleep(.02)\n")
         command = shlex.join([sys.executable, "-c", code])
         process = subprocess.Popen([sys.executable, str(CLI), "--root", str(self.root),
-                                   "--manager-id", "alpha", "--owner-file", str(self.credentials["alpha"]),
+                                   "--manager-id", manager, "--owner-file", str(self.credentials[manager]),
                                    *(action or ["verify", "T001"]), "--review", str(self.review), "--command", command],
-                                  env=dict(self.env, MANAGER_OWNER_FILE=str(self.credentials["alpha"])),
+                                  env=dict(self.env, MANAGER_OWNER_FILE=str(self.credentials[manager])),
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def cleanup():
             finish.touch()
@@ -2244,7 +2244,165 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(statuses["T002"]["state"], "failed")
         self.assertEqual(statuses["T002"]["acceptance_eligibility"], "unaccepted")
 
-    @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
+    def composition_fixture(self):
+        source, legacy = self.legacy_fixture()
+        (self.root / "base.txt").write_text("user staged version\n")
+        self.git("add", "base.txt")
+        (self.root / "base.txt").write_text("user working version\n")
+        (self.root / "personal.txt").write_text("user untracked file\n")
+        main_snapshot = {name: (self.root / name).read_bytes()
+                         for name in ("base.txt", "personal.txt", ".git/index", ".git/HEAD", ".gitignore")}
+        preview = self.migrate("--dry-run")
+        result = self.migrate("--expect-source", preview["source_sha256"], "--source-quiesced")
+        self.claim_migrated()
+        base = legacy["tasks"]["T001"]["base"]
+        self.git("branch", "release-converted", base)
+        integration = self.call("integration", "init", "--base", base, manager="converted")
+        self.combined_verify(manager="converted", ok=False)  # History cannot qualify as a source.
+        self.verify(manager="converted", command="test -f staged.txt && test -L link")
+        self.call("accept", "T001", manager="converted")
+        tree, worker = Path(integration["worktree"]), self.home / "worktrees/T001"
+        # Transfer the reviewed dirty snapshot without staging or changing the accepted source.
+        for name in ("base.txt", "staged.txt", "notes.txt", "link"):
+            shutil.copy2(worker / name, tree / name, follow_symlinks=False)
+        self.git("add", "base.txt", "staged.txt", "notes.txt", "link", root=tree)
+        self.git("commit", "-qm", "Integrate reverified migrated snapshot", root=tree)
+        return result, integration, main_snapshot
+
+    def test_composition_migration_dependency_handoff_and_competing_delivery(self):
+        migration, integration, main_snapshot = self.composition_fixture()
+        target = "refs/heads/release-converted"
+        tree = Path(integration["worktree"])
+        source_before = self.snapshot(self.home / "worktrees/T001")
+        history_before = self.snapshot(self.home / "tasks/T001/history/v1")
+        backup_before = self.snapshot(Path(migration["backup"]))
+        old_ref = self.git("for-each-ref", "--format=%(refname) %(objectname)",
+                           "refs/heads/manager/" + hashlib.sha256(str(self.root).encode()).hexdigest()[:12] + "/T001")
+        # Migration preserves queued definitions, including their old base. Replan
+        # with a fresh task rather than silently rewriting a historical definition.
+        self.call("spawn", "--id", "T003", "--base", integration["branch"], manager="converted", ok=False)
+        self.assertFalse((self.home / "worktrees/T003").exists())
+        dependent = self.spawn("T004", manager="converted", depends_on="T001", base=integration["branch"])
+        worker = Path(dependent["worktree"])
+        self.assertEqual((worker / "base.txt").read_text(), "legacy unstaged change\n")
+        self.assertEqual((worker / "staged.txt").read_text(), "blob only in index\n")
+        self.worker_done("T004", manager="converted")
+        self.verify("T004", manager="converted")
+        message = self.call("send", "T004", "Add dependent artifact", "--inbox-only", manager="converted")
+        self.call("accept", "T004", manager="converted", ok=False)
+        environment = self.worker_env("converted", "T004")
+        self.call("report", "T004", "--attempt", "1", "--state", "working", "--summary", "Correction received",
+                  "--ack", message["message_id"], manager="converted", owner=False, env=environment)
+        self.assertTrue(self.call("inbox", "T004", manager="converted")[0]["acknowledged"])
+        (worker / "dependent.txt").write_text("Depends on migrated snapshot\n")
+        self.git("add", "dependent.txt", root=worker)
+        self.git("commit", "-qm", "Dependent artifact", root=worker)
+        self.worker_done("T004", manager="converted")
+        self.verify("T004", manager="converted", command="test -f dependent.txt && test -f staged.txt")
+        self.call("accept", "T004", manager="converted")
+        self.git("cherry-pick", dependent["branch"], root=tree)
+        proof = self.combined_verify(manager="converted", sources=["T001", "T004"],
+                                     command="test -f dependent.txt && test -f staged.txt")
+
+        self.create_manager("beta")
+        beta_source, beta = self.integration_fixture(manager="beta")
+        beta_proof = self.combined_verify(manager="beta", target=target)
+        beta_before = self.snapshot(self.root / ".manager/beta")
+        previous = self.credentials["converted"]
+        self.call("owner", "release", manager="converted")
+        new = self.directory / "composition-successor.json"
+        self.call("owner", "claim", "--session-id", "successor", "--credential-file", str(new),
+                  manager="converted", owner=False)
+        self.call("deliver", "--verification", proof["id"], manager="converted", ok=False)
+        self.credentials["converted"] = new
+        self.assertNotEqual(previous, new)
+        self.assertTrue(self.call("integration", "status", manager="converted")["eligible"])
+        self.assertEqual(beta_before, self.snapshot(self.root / ".manager/beta"))
+        delivered_beta = self.call("deliver", "--verification", beta_proof["id"], manager="beta")
+        self.call("deliver", "--verification", proof["id"], manager="converted", ok=False)
+        self.assertEqual(self.git("rev-parse", target), delivered_beta["new_oid"])
+        self.assertFalse(self.call("integration", "status", manager="converted")["eligible"])
+
+        merge = subprocess.run(["git", "-C", str(tree), "merge", "--no-commit", target], capture_output=True)
+        self.assertEqual(merge.returncode, 1)  # Both candidates changed base.txt.
+        (tree / "base.txt").write_text("legacy unstaged change\nbeta accepted change\n")
+        self.git("add", "base.txt", root=tree)
+        self.git("commit", "-qm", "Resolve shared target conflict", root=tree)
+        fresh = self.combined_verify(manager="converted", sources=["T001", "T004"],
+                                     command="test -f dependent.txt && test -f staged.txt && grep -q beta base.txt")
+        receipt = self.call("deliver", "--verification", fresh["id"], manager="converted")
+        self.assertEqual(receipt["old_oid"], delivered_beta["new_oid"])
+        self.assertEqual(self.git("rev-parse", receipt["receipt_ref"]), self.git("rev-parse", target))
+        self.assertEqual(self.call("deliver", "--verification", fresh["id"], manager="converted"), receipt)
+        self.assertEqual(self.call("reconcile", manager="converted")["deliveries"], [receipt])
+        self.assertEqual(source_before, self.snapshot(self.home / "worktrees/T001"))
+        self.assertEqual(history_before, self.snapshot(self.home / "tasks/T001/history/v1"))
+        self.assertEqual(backup_before, self.snapshot(Path(migration["backup"])))
+        self.assertEqual(old_ref, self.git("for-each-ref", "--format=%(refname) %(objectname)", old_ref.split()[0]))
+        for name, content in main_snapshot.items():
+            self.assertEqual((self.root / name).read_bytes(), content)
+        before = self.snapshot(self.root / ".manager"), self.snapshot(self.root / ".git")
+        for manager in ("converted", "beta"):
+            for args in (("init",), ("status",), ("owner", "status"), ("integration", "status"),
+                         ("inbox", "T001"), ("events",)):
+                self.call(*args, manager=manager, owner=False)
+        self.call("managers", manager=None, owner=False)
+        self.assertTrue(self.migrate()["noop"])
+        self.assertEqual(before, (self.snapshot(self.root / ".manager"), self.snapshot(self.root / ".git")))
+
+    def test_composition_migrated_long_checks_handoff_reports_capacity_and_delivery(self):
+        migration, integration, main_snapshot = self.composition_fixture()
+        self.create_manager("beta")
+        self.integration_fixture(manager="beta")
+        beta_proof = self.combined_verify(manager="beta")
+        (self.root / ".manager.yml").write_text(json.dumps({"manager": {"max_workers": 1}}))
+        process, finish = self.start_verify(manager="converted", action=["integration", "verify", "--target",
+                                          "refs/heads/release-converted", "--source", "T001"])
+        self.takeover(manager="converted")
+        retried = self.call("retry", "T002", "--agent", "claude", manager="converted")
+        beta_worker = self.spawn("T002", manager="beta", agent="codex")
+        self.assertEqual((retried["attempt"], retried["agent"]), (3, "claude"))
+        self.assertEqual(beta_worker["agent"], "codex")
+        for manager in ("converted", "beta"):
+            capacity = self.call("status", manager=manager, owner=False)["worker_capacity"]
+            self.assertEqual(capacity, {"active": 1, "max_workers": 1, "scope": "manager"})
+            self.call("spawn", "--id", "T004", "--title", "Beyond limit", "--brief", str(self.brief),
+                      manager=manager, ok=False)
+        message = self.call("send", "T002", "Continue new assignment", "--inbox-only", manager="converted")
+        environment = self.worker_env("converted", "T002")
+        self.call("report", "T002", "--attempt", "3", "--state", "working", "--summary", "Fresh assignment",
+                  "--ack", message["message_id"], manager="converted", owner=False, env=environment)
+        before_beta = self.snapshot(self.root / ".manager/beta")
+        self.call("report", "T002", "--attempt", "1", "--state", "working", "--summary", "Wrong manager",
+                  manager="beta", owner=False, env=environment, ok=False)
+        self.assertEqual(before_beta, self.snapshot(self.root / ".manager/beta"))
+        delivered = self.call("deliver", "--verification", beta_proof["id"], manager="beta")
+        self.assertEqual(delivered["state"], "committed")  # Long checks hold no common delivery gate.
+        reconciled = self.call("reconcile", manager="converted")
+        self.assertIn({"resource": "integration", "issue": "operation_busy"}, reconciled["notices"])
+        record = self.finish_verify(process, finish, passed=False)
+        self.assertEqual(record["outcome"], "fenced")
+        self.call("deliver", "--verification", record["id"], manager="converted", ok=False)
+        self.call("reconcile", manager="converted")
+        self.assertEqual(self.call("owner", "status", manager="converted")["pending_operations"], [])
+        fresh = self.combined_verify(manager="converted", command="test -f staged.txt")
+        self.call("deliver", "--verification", fresh["id"], manager="converted")
+        self.assertTrue(self.call("status", manager="beta")["observed"]["tasks"][1]["alive"])
+        self.assertTrue(self.migrate()["noop"])
+        for name, content in main_snapshot.items():
+            self.assertEqual((self.root / name).read_bytes(), content)
+
+    def test_migration_selector_examples_agree_and_conflicts_are_readonly(self):
+        self.legacy_fixture()
+        before = self.snapshot(self.root / ".manager"), self.snapshot(self.root / ".git")
+        global_preview = self.migrate("--dry-run")
+        local_preview = self.call("migrate", "--manager-id", "converted", "--dry-run", manager=None, owner=False)
+        both_preview = self.migrate("--manager-id", "converted", "--dry-run")
+        self.assertEqual(global_preview, local_preview)
+        self.assertEqual(global_preview, both_preview)
+        error = self.migrate("--manager-id", "different", "--dry-run", ok=False)
+        self.assertIn("Conflicting migration manager selectors", error["error"])
+        self.assertEqual(before, (self.snapshot(self.root / ".manager"), self.snapshot(self.root / ".git")))
 
     @unittest.skipUnless(USE_REAL, "requires MANAGER_TEST_REAL_TMUX=1")
     def test_real_interactive_worker_receives_message(self):

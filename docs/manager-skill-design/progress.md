@@ -1,18 +1,27 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-11。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`。MM-06 提交以 `feat: add recoverable v1 manager migration` 識別；hash 與後續變更以實際 status/log 為準。
+最後更新：2026-10-12。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`。MM-07 尚未 commit/push；後續變更以實際 status/log 為準。
 
-**目前狀態：MM-02–MM-06 完成（namespace／主控／整合／交付／migration），最終預設／真實 tmux 完整回歸通過；SPEC-001 為 Implementing。下一步 MM-07 整體組合與文件驗證；真實 Agent smoke test 仍待後續完成。**
+**目前狀態：MM-02–MM-07 完成（runtime／整體 deterministic 組合驗證／文件同步），預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過；SPEC-001 為 Implementing。下一步 MM-08；真實 Agent smoke test 仍待完成。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
-4. 接續 **MM-07**：先讀 [SPEC-001](specs/001-multi-manager-isolation.md)、[MM-06 validation](reviews/MM-06-validation.md) 與 [runtime reference](../../skills/manager/references/runtime.md)。整體檢查 namespace／owner handoff／long checks／integration／delivery／migration 合用、CLI 範例與 SKILL/protocol 一致性，補足 deterministic 組合驗證；各功能使用說明已於實作時同步。保留 expected-OID／receipt、checked-out target 拒絕、quiescence／forward-only migration，仍只用暫存 fixtures。MM-07 完成後 SPEC-001 仍為 Implementing，**MVP-02/MM-08** 真實 Agent 缺口不關閉。
+4. 接續 **MM-08**：先讀 [SPEC-001](specs/001-multi-manager-isolation.md)、[MM-07 validation](reviews/MM-07-validation.md)、[runtime reference](../../skills/manager/references/runtime.md) 與下方原 MVP-02 驗收。檢查本機 provider 版本／登入／host 條件；用獨立暫存 repo、小任務及至少一個真實 provider 走完 selector/report/ack/correction/result/verify/accept 與 manager integration 隔離，記錄另一 provider 狀態。保持原生 permissions、必要用量／外部存取範圍，不操作使用者 runtime。符合原 MVP-02 條件可共用證據；全部必要驗收完成後才將 SPEC-001 標為 Implemented。Task base 在註冊時固定，先整合 prerequisites 再註冊依賴工作；已有 queued 定義需新 base 時保留舊資料、以新 ID 重新規劃。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-12：MM-07 完成與下一步
+
+- 接續使用者指定的 MM-07；開始時工作樹乾淨，MM-06 為 `81b2104`。沒有啟動真實 provider 或修改 runtime API。
+- 新增 migration → historical source 拒絕／fresh acceptance → dirty snapshot 整合 → fresh dependent committed base → correction/ack/verify/accept → release/claim → competing delivery／Git conflict／new proof／receipt 的完整組合回歸。保留 user staged/working/untracked files、HEAD/index、accepted source、backup/history/舊 refs，完成後多 namespace 查閱與 migrate no-op 維持 bytes/mtime。
+- 補長 combined checks 中 takeover、新 assignment retry/report/ack、同名 task 路由拒絕、每 manager quota 與其他 manager delivery；舊 run fenced，reconcile/new verify 後才可交付。另驗 global/subcommand/same-value/conflicting migration selectors。
+- 同步 SKILL/manager protocol/runtime/template/專案與設計入口；worker protocol/escalation/adapter flags 核對一致。澄清 task 註冊即固定 base、existing queued 無 edit API，改 base 需新 task ID；spec 修正相同 selector 可並存的文字，不變更 runtime 行為。
+- 證據：[MM-07 validation](reviews/MM-07-validation.md) 含 AC-01–AC-14 deterministic 對照。最終預設 107 項（106 通過、1 real-only skip，312.805s）；真實 tmux 107 項全通過（342.166s）。YAML 成功路徑 1 項（1.209s）、skill/UI YAML、10 份 Python 語法／runtime 可執行權限、Markdown links/anchors/fences 與 66 個現行 CLI 範例 parser、diff check 通過；文件可用 [mm07_validate.py](reviews/mm07_validate.py) 重跑。
+- 真實 tmux 初次沙箱 socket 受限，依既有主機許可通過完整專用 server；只有假的 Codex/Claude Worker、沒有模型/API。MM-07 Done；MM-08/MVP-02 Todo，SPEC-001 維持 Implementing。下一步 MM-08，尚未 commit/push；Git status/log 為準。
 
 ## 2026-10-11：MM-05 提交與 MM-06 完成
 
@@ -111,7 +120,7 @@
 
 ## 已完成的驗證
 
-本節保留 MVP Session 的歷史結果，對應 `d8b0ca5`；本輪 MM-02 的 v2 結果在上方接續紀錄及 validation，不將 v1 歷史結果當成新功能驗收。
+本節保留 MVP Session 的歷史結果，對應 `d8b0ca5`；最新 v2 結果在上方接續紀錄及 [MM-07 validation](reviews/MM-07-validation.md)，不將 v1 歷史結果當成新功能驗收。
 
 | 驗證 | 結果與範圍 |
 | --- | --- |

@@ -1,6 +1,6 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-12。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`（已 push）。MM-08 已完成，變更尚未 commit/push；後續以實際 status/log 為準。
+最後更新：2026-10-13。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`（已 push）；MM-08 與 Claude 補驗：`86e5273`。2026-10-13 核對 HEAD 與本機 `origin/docs/manager-multi-session-spec` 均指向 `86e5273`；後續以實際 status/log 為準。
 
 **目前狀態：MM-01–MM-08／MVP-02 Done，SPEC-001 Implemented。真實 Codex 0.162.1 完成 report/ack/correction、獨立驗收與 integration 隔離；Claude Code 2.1.296 於登入後以 auto 權限模式通過同一 lifecycle。MM-07 預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過；本輪 runtime/adapters 未改。Phase 2 仍為待另立 spec 的候選。**
 
@@ -14,6 +14,11 @@
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
 
+## 2026-10-13：提交狀態核對
+
+- MM-08 與 Claude 補驗已於 2026-10-12 提交為 `86e5273`（`test: validate real Codex and Claude Code provider smoke`）。本次更新前工作樹乾淨，HEAD 與本機遠端追蹤分支 `origin/docs/manager-multi-session-spec` 一致。
+- 同步 README／tasks／本文件的提交狀態；Phase 2 尚未開始，下一個候選仍為 P2-01 DAG Scheduler，啟動前另立 spec。
+
 ## 2026-10-12：MM-08／MVP-02 完成
 
 - 使用者明確同意信任暫存 fixture 後，重新 inspect 原生畫面並僅確認該 repository，保留 workspace-write／原生 permissions；沒有改全域 approval/sandbox 或啟動第二 provider。
@@ -21,7 +26,7 @@
 - 獨立 review 後，task verification `ead15e392ce04db8b10ff02b76397acc` 的 tests 與 exact-output/error assertions 均 exit 0／unchanged；accept/current 並停止 matching pane。只將 review 過的兩檔轉入 alpha integration，commit candidate `34b2d1553bd367f505dd36ad202aca5a2da66fa7`；combined run `01cc02cbc1ce4c85906733b59747b353` passed，最後 eligible true。
 - Main HEAD/index/staged/working/untracked files hashes、beta 同名 queued T001／integration tree bytes/mtime/modes、accepted source snapshot 保留；完成後再核對 accepted／combined 資格、無活 Worker，停止專用 tmux server。原 runtime/Git/private artifacts 留在 `/private/tmp/mm08-real-provider-elquvjt2`，沒有操作使用者產品專案或更新 fixture delivery target。
 - 證據：[MM-08 validation](reviews/MM-08-validation.md)、[結果／21 個 artifact hashes](reviews/mm08-results.json)；artifact copies 不含 owner credentials/raw native logs。Helper 全部流程實跑；trust 無 confirm／已確認重播各拒絕，Python 語法／artifact hashes／文件 links/anchors/fences／66 個 CLI examples／skill／diff checks 通過。Runtime/adapters 未修改，沿用 MM-07 的完整回歸，沒有重新冒稱本輪 fake tests 是真實模型驗收。
-- Claude Code 2.1.296 初次未登入；登入後同日補跑真實 lifecycle 通過（host 原生 auto 權限模式，見 [MM-08 Claude](reviews/MM-08-validation.md#claude-code-第二-provider)）；MM-08/MVP-02 共用同一證據 Done，SPEC-001 Implemented。同步入口／runtime reference／spec/task/progress。MM-08 與 Claude 補驗尚未 commit/push；下一個候選 P2-01 需另立 spec，本輪沒有自動開始。
+- Claude Code 2.1.296 初次未登入；登入後同日補跑真實 lifecycle 通過（host 原生 auto 權限模式，見 [MM-08 Claude](reviews/MM-08-validation.md#claude-code-第二-provider)）；MM-08/MVP-02 共用同一證據 Done，SPEC-001 Implemented。同步入口／runtime reference／spec/task/progress。此段完成時尚未 commit/push，後續已提交為 `86e5273`，提交狀態見上方 2026-10-13 核對紀錄；下一個候選 P2-01 需另立 spec，本輪沒有自動開始。
 
 ## 2026-10-12：MM-07 push 與 MM-08 開始
 

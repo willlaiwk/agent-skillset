@@ -1,6 +1,6 @@
 # Manager Skill — 開發任務
 
-最後更新：2026-10-12。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
+最後更新：2026-10-13。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
 2026-10-12 完成 MM-08：真實 Codex 通過新路由、report/ack/correction、獨立驗收與 integration 隔離；MM-08/MVP-02 共用證據結案，SPEC-001 為 Implemented。Claude Code 2.1.296 登入後補跑同一流程通過（auto 權限模式）。Phase 2 仍為候選，啟動前需另立 spec；任務順序不代表授權外部交付。
 
@@ -102,6 +102,6 @@ MVP-02 的原驗收條件由 MM-08 真實 provider 流程涵蓋；兩者連結�
 - 驗證：控制必要使用量與外部存取範圍；保留 provider 原生權限檢查。遭主機限制時記錄實際阻塞，未驗證不標 Done。
 - 結果：使用者明確同意暫存 fixture 的原生信任後，Codex 0.162.1／gpt-6.1-sol high 同 session 完成 structured working/done、send/inbox ack、trim/blank error 修正、新 result、Manager review/verify/accept 與專屬 integration/combined verify。Main HEAD/index/staged/working/untracked 與 beta 同名 queued task／integration tree 保留，accepted source 未修改；停止專用 tmux server 並保留 artifacts。沒有 runtime/adapter 變更。
 - 證據：[MM-08 validation](reviews/MM-08-validation.md)、[結果與 artifact hashes](reviews/mm08-results.json)；初版 2／修正版 4 項 Worker tests、Manager 2 個 task checks、1 個 combined check 通過，current acceptance／combined eligible 再核對通過；21 份審查後證據不含 credentials/raw native logs。原 MVP-02 同一證據符合驗收，兩者 Done；SPEC-001 Implemented。
-- 邊界／接續：Claude Code 2.1.296 登入後補跑通過（host auto 權限模式；未驗證 default 手動核准模式）；原生 sandbox/permissions 保留。Helper trust 無 confirm／重播拒絕、語法／文件／skill／diff 檢查通過。MM-07 已 push `c58cbf7`，MM-08 與 Claude 補驗變更尚未 commit/push。Phase 2 需另立 spec，不自動開始。
+- 邊界／接續：Claude Code 2.1.296 登入後補跑通過（host auto 權限模式；未驗證 default 手動核准模式）；原生 sandbox/permissions 保留。Helper trust 無 confirm／重播拒絕、語法／文件／skill／diff 檢查通過。MM-07 已 push `c58cbf7`；MM-08 與 Claude 補驗已提交為 `86e5273`，2026-10-13 核對本機 `origin/docs/manager-multi-session-spec` 指向同一提交。Phase 2 需另立 spec，不自動開始。
 
 P2 任務目前只是候選。啟動前按 README 流程另立功能 spec／必要 ADR 與具體驗收條件；不以這張表代替規格。

@@ -1,6 +1,6 @@
 # Manager Skill — 規格、決策與開發入口
 
-最後更新：2026-10-12。
+最後更新：2026-10-13。
 
 這個目錄管理 manager skill 本身的設計與開發。使用 skill 管理產品專案時產生的 `.manager/` 是執行資料，兩者不共用任務狀態。
 
@@ -60,4 +60,4 @@ Task 狀態使用 `Todo`、`In progress`、`Blocked`、`Done`、`Cancelled`。�
 3. 只讀當前任務相關的 spec、ADR、`design.md` 章節與 skill/runtime 參考。
 4. 接續後更新 task 與 progress；未跑的測試保持未驗證。
 
-2026-10-12 完成 MM-08 真實 Codex report/ack/correction／獨立 acceptance／integration 隔離，證據及第二 provider 狀態見 [MM-08 validation](reviews/MM-08-validation.md)；原 MVP-02 共用證據結案，SPEC-001 Implemented。MM-07 的 [deterministic AC 對照](reviews/MM-07-validation.md) 與預設 107 項（106 通過、1 skip）／真實 tmux 107 項全通過，仍只對應假的 Worker。先前 migration／namespace／主控／整合／交付證據見 [MM-06](reviews/MM-06-validation.md)、[MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-07 提交 `c58cbf7` 已 push；MM-08 尚未 commit/push，Git status/log 為準。Phase 2 候選與接續見 [progress](progress.md)，啟動前另立 spec。
+2026-10-12 完成 MM-08 真實 Codex report/ack/correction／獨立 acceptance／integration 隔離，證據及第二 provider 狀態見 [MM-08 validation](reviews/MM-08-validation.md)；原 MVP-02 共用證據結案，SPEC-001 Implemented。MM-07 的 [deterministic AC 對照](reviews/MM-07-validation.md) 與預設 107 項（106 通過、1 skip）／真實 tmux 107 項全通過，仍只對應假的 Worker。先前 migration／namespace／主控／整合／交付證據見 [MM-06](reviews/MM-06-validation.md)、[MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-07 提交 `c58cbf7` 已 push；MM-08 與 Claude 補驗已提交為 `86e5273`，2026-10-13 核對本機 `origin/docs/manager-multi-session-spec` 指向同一提交。Phase 2 候選與接續見 [progress](progress.md)，啟動前另立 spec。

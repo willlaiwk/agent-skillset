@@ -2,18 +2,43 @@
 
 最後更新：2026-10-13。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`；MM-08 與 Claude 補驗：`86e5273`；提交狀態文件：`77d55f4`。原分支已 fast-forward 合併並推送至 main；DOC-02 結構調整完成，提交／推送狀態以 Git status/log 與 origin/main 為準；使用者要求先 commit/push，再自行進行 GitHub rename。
 
-**目前狀態：MM-01–MM-08／MVP-02 Done，SPEC-001 Implemented；DOC-02 單一 repository 結構調整 Done。Skill payload 位於根目錄，開發工具位於 tests/，設計與驗收文件位於 docs/。本輪 107 項回歸（106 通過、1 real-only skip）、2 項真實 tmux focused tests 與 3 項獨立安裝 payload tests 通過；runtime/adapters 未改。真實 Codex／Claude lifecycle 沿用 MM-08 證據，Phase 2 仍為待另立 spec 的候選。**
+**目前狀態：MM-01–MM-08／MVP-02／DOC-02 Done，SPEC-001 Implemented。P2-01 In progress：SPEC-002 經 reviewer核對修訂後 Ready、ADR-0007 Accepted／ADR-0006 Superseded、DS-01文件完成；下一步 DS-02 proof binding／pin／三層 gate／較早 launch intent，runtime尚未實作。本輪只有開發文件修訂與暫存 Git primitive probe，不啟動 Worker。先前回歸與 MM-08不代表 scheduler驗收。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
 3. 閱讀 [SKILL.md](../SKILL.md)、[runtime reference](../references/runtime.md) 與 [manager protocol](../references/manager-protocol.md)，理解現在已提供的指令。
-   單一 repository 調整已通過 [DOC-02 validation](reviews/DOC-02-layout-validation.md)；開發命令見 [專案 README](../README.md#development-and-validation)。GitHub rename 由使用者處理，rename 後再核對 origin URL。
-4. SPEC-001 已完成；先讀 [MM-08 validation](reviews/MM-08-validation.md) 與 [結果／artifact hashes](reviews/mm08-results.json)，避免重跑已完成的真實 smoke。暫存 source/state/private credentials 保留，專用 tmux server 已停止。後續候選為 P2-01 DAG Scheduler；啟動前依 README 另立 spec、必要 ADR 與具體驗收條件，先決定 committed dependency base／task 註冊時機及 worker 額度，不能只看 done 就從舊 base 啟動。Claude 或其他版本若需驗證，另記證據，不從 Codex 結果推論。
+   單一 repository 調整已通過 [DOC-02 validation](reviews/DOC-02-layout-validation.md)；開發命令見 [專案 README](../README.md#development-and-validation)。本次純讀核對 origin 已為 `git@github.com:willlaiwk/manager-skill.git`，HEAD／本機 origin/main 同為 `50e8581`；沒有 fetch 或改 remote。
+4. 接續 [SPEC-002](specs/002-dag-scheduler.md)、[ADR-0007](adr/0007-task-base-proof-and-launch-gates.md)、[DS-01 review](reviews/DS-01-contract-review.md) 與 DS-02。Reviewer 1–12點已核對；bind／launch查同一歷史 proof、無 integration operation lock、共用 gate與 scheduler eligibility分開、每 candidate全部 tasks try-lock，另補 pin／rebind與完整 launch窗口。SPEC-001／MM-08已完成，不重跑 provider smoke；P2-02–P2-04仍需另立 spec。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-13：SPEC-002 第二輪 review 修訂
+
+- Reviewer 第二輪指出 5 個剩餘缺口，使用者要求補進 spec 並收集 probe 證據。
+- SPEC-002：§6.1 列出 launch intent stage 與結束狀態，未結束者擋下全部 launch 路徑；§6.2 規定 retry intent 早於 kill／history／marker 移除／status 重設，history create-only 不覆寫；§4.2 共用 gate 檢查 pending bind intent，新增 reason `bind_needs_resume`；§5.1 補 expect-binding 七種組合，同 proof 重播一律零寫入。AC-05／AC-09 與 §9 決定表同步更新。
+- Probe 證據：首次 `result.json` 原樣收進 [docs/reviews/ds01-pin-probe](reviews/ds01-pin-probe/result.json)。首次 inline script 沒有保存，因此重建 [tests/probe_ds01_pin.py](../tests/probe_ds01_pin.py)（相同 check 名稱，另加 GC 對照組，依 DOC-02 慣例放在 `tests/`），重跑 6 項通過並存為 [rerun-result.json](reviews/ds01-pin-probe/rerun-result.json)。暫存 fixture 未刪除。
+- Runtime／adapters／已發布使用文件未改；沒有 Worker、模型、行為回歸或 tmux tests。尚未 commit／push。接續 DS-02。
+
+## 2026-10-13：Reviewer 核對／SPEC-002 修訂
+
+- 使用者提供 Reviewer Agent 的12點意見，要求評估真實性與調整必要。逐一對照 `scripts/manager` 的 load／launch／retry／reconcile／source_snapshot／integration verify/status與 lock flow，並核對 migration轉換。第1–4點為契約缺口，第5–12點為合理補充；兩項說法收窄：不必宣稱唯一恢復是新 task ID，既有 retry需 owner明確呼叫且不是 scheduler自動重啟。
+- 初版 Ready標得過早，已修正後重新核對契約。Bind／launch共用歷史 proof檢查，不重用目前 delivery eligibility或取 integration operation lock；三層 gate區分手動有效 tree reuse與 scheduler無殘留；每 candidate全部 task nonblocking取鎖／busy標記，讓全圖 reconcile不碰未持鎖 task。
+- 同時補同 base expected-binding rebind／歷史、固定 commit pin與 bind intent／恢復、所有 launch的 intent早於 worktree與 assignment副作用、timestamp單項分類、reason precedence／capacity／outcome、takeover沿用 binding、舊 binary無法強制攔截風險與 source保留。原 AC-01–AC-12增加對應情境，不宣稱已通過 runtime。
+- 依 ADR-0001的歷史維護規則，新增 ADR-0007 Accepted，ADR-0006標 Superseded且保留原理由；DS-01 review保留原14項 walkthrough並新增12項 reviewer核對。
+- Git primitive probe：Git 2.55.0，結果原存於暫存目錄，現已收進 [ds01-pin-probe](reviews/ds01-pin-probe/result.json)，5項 assertions通過：expected-missing pin、拒絕既有同 OID ref、integration rewrite後 pin不變、reflog expire／gc後 candidate仍為 commit、symbolic pin可辨識。只驗 Git機制，不是 scheduler／bind runtime驗收，未刪 fixture。
+- 文件驗證：`python3 -B tests/validate_docs.py`通過（39份 Markdown、263個本地 links／anchors、paired fences、67個現行 CLI examples）；tracked diff與新增文件 whitespace檢查通過。Runtime／adapters／已發布使用文件未改，沒有 Worker／模型呼叫、完整行為回歸或 tmux tests，尚未 commit／push。接續 DS-02。
+
+## 2026-10-13：P2-01 規格啟動／DS-01 完成
+
+- 使用者要求開始下一步；本輪完成 DAG Scheduler 規格、ADR、契約 walkthrough 與具體任務拆解。SPEC-002 Ready／ADR-0006 Accepted 僅代表可實作的契約，runtime 尚未開始。
+- 定案：沿用固定 committed base、Manager 整合／combined verify 後再註冊依賴 task、`schedule bind` 明確綁定 proof、純讀 `schedule status` 與有界 `schedule run`。每 manager live capacity，共用 launch gate；不新增背景 watcher 或自動 retry。
+- 實作對照揭露現行手動 spawn 可在依賴 accepted 後仍使用舊 base；新 scheduler 要求依賴 binding，保留舊手動 API 相容性。Binding 後重查 immutable commit／sources／proof，不把 integration branch 或 target 後續前進誤當作 base 失效，也不放寬 delivery gate。
+- [DS-01 review](reviews/DS-01-contract-review.md) 記錄 source inspection、14 項設計 walkthrough；12 個 runtime AC 待 DS-02–DS-04 驗收。此次沒有執行行為回歸、tmux 或真實模型 smoke，runtime／adapters／已發布 skill guidance 均未改。
+- 文件驗證：`python3 -B tests/validate_docs.py` 通過（38 份 Markdown、256 個本地 links／anchors、paired fences、67 個現行 CLI examples）；`git diff --check` 通過。新 spec 的目標命令尚未加入 parser，不計為現行 CLI 範例驗收。
+- 變更：新增 SPEC-002／ADR-0006／DS-01 review，同步 docs 入口、design、tasks 與本文件；尚未 commit／push。下一個可執行任務 DS-02，不重跑已完成的 MM-08。
 
 ## 2026-10-13：單一 manager-skill repository 結構調整
 

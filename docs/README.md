@@ -26,6 +26,7 @@ Repository 已調整為單一 `manager-skill` 專案：skill 入口與 runtime r
 | ID | 主題 | 狀態 | 相關任務／決策 |
 | --- | --- | --- | --- |
 | SPEC-001 | [多 manager 隔離、整合與舊格式遷移](specs/001-multi-manager-isolation.md) | Implemented；runtime／deterministic／真實 Codex／Claude 驗收完成 | MM-01–MM-08／MVP-02 Done |
+| SPEC-002 | [DAG Scheduler](specs/002-dag-scheduler.md) | Ready；契約與拆解完成，runtime 尚未實作 | P2-01 In progress／DS-01 Done／DS-02–DS-04 Todo |
 
 | ID | 決策 | 狀態 |
 | --- | --- | --- |
@@ -34,6 +35,8 @@ Repository 已調整為單一 `manager-skill` 專案：skill 入口與 runtime r
 | ADR-0003 | [各 manager 獨立整合，共用交付入口](adr/0003-isolated-integration.md) | Accepted；獨立整合與共用本地交付已實作 |
 | ADR-0004 | [遷移由 manager runtime 提供](adr/0004-runtime-migration.md) | Accepted；backup/journal、歷史資格失效及 forward resume 已實作 |
 | ADR-0005 | [單一 skill repository 與檔案分工](adr/0005-single-skill-repository.md) | Accepted；根目錄發布 skill，tests／docs 管理開發資料 |
+| ADR-0006 | [排程使用固定 base 與明確依賴證據](adr/0006-scheduler-fixed-base.md) | Superseded；由 ADR-0007取代，保留原理由 |
+| ADR-0007 | [歷史 task-base proof與分層 launch gate](adr/0007-task-base-proof-and-launch-gates.md) | Accepted；reviewer核對修訂，runtime尚未實作 |
 
 ## 規格調整流程
 
@@ -63,4 +66,4 @@ Task 狀態使用 `Todo`、`In progress`、`Blocked`、`Done`、`Cancelled`。�
 3. 只讀當前任務相關的 spec、ADR、`design.md` 章節與 skill/runtime 參考。
 4. 接續後更新 task 與 progress；未跑的測試保持未驗證。
 
-2026-10-12 完成 MM-08 真實 Codex report/ack/correction／獨立 acceptance／integration 隔離，證據及第二 provider 狀態見 [MM-08 validation](reviews/MM-08-validation.md)；原 MVP-02 共用證據結案，SPEC-001 Implemented。MM-07 的 [deterministic AC 對照](reviews/MM-07-validation.md) 與預設 107 項（106 通過、1 skip）／真實 tmux 107 項全通過，仍只對應假的 Worker。先前 migration／namespace／主控／整合／交付證據見 [MM-06](reviews/MM-06-validation.md)、[MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-07 提交 `c58cbf7` 已 push；MM-08 與 Claude 補驗已提交為 `86e5273`，2026-10-13 核對本機 `origin/docs/manager-multi-session-spec` 指向同一提交。Phase 2 候選與接續見 [progress](progress.md)，啟動前另立 spec。
+2026-10-12 完成 MM-08 真實 Codex report/ack/correction／獨立 acceptance／integration 隔離，證據及第二 provider 狀態見 [MM-08 validation](reviews/MM-08-validation.md)；原 MVP-02 共用證據結案，SPEC-001 Implemented。MM-07 的 [deterministic AC 對照](reviews/MM-07-validation.md) 與預設 107 項（106 通過、1 skip）／真實 tmux 107 項全通過，仍只對應假的 Worker。先前 migration／namespace／主控／整合／交付證據見 [MM-06](reviews/MM-06-validation.md)、[MM-02](reviews/MM-02-validation.md)、[MM-03](reviews/MM-03-validation.md)、[MM-04](reviews/MM-04-validation.md) 與 [MM-05](reviews/MM-05-validation.md)，設計定案見 [MM-01](reviews/MM-01-contract-review.md)。MM-08 與 Claude 補驗提交為 `86e5273`，單一 repository 整理提交為 `50e8581`。2026-10-13 P2-01 規格啟動，SPEC-002 Ready；下一個可執行任務 DS-02，詳見 [progress](progress.md)。

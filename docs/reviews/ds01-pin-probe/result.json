@@ -1,0 +1,12 @@
+{
+  "git_version": "git version 2.55.0",
+  "fixture": "/private/tmp/ds01-pin-review-ckm_adpu",
+  "checks": {
+    "expected_missing_pin_created": true,
+    "existing_same_oid_not_silently_adopted": true,
+    "pin_survives_integration_rewrite": true,
+    "candidate_remains_commit_after_gc": true,
+    "symbolic_pin_detectable_even_same_oid": true
+  },
+  "scope": "Git primitive only; scheduler/binding runtime not exercised"
+}

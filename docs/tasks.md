@@ -2,7 +2,7 @@
 
 最後更新：2026-10-13。狀態定義與更新流程見 [README](README.md)。這份清單追蹤 skill 開發，不是產品專案 `.manager/` 的 runtime task registry。
 
-2026-10-12 完成 MM-08：真實 Codex 通過新路由、report/ack/correction、獨立驗收與 integration 隔離；MM-08/MVP-02 共用證據結案，SPEC-001 為 Implemented。Claude Code 2.1.296 登入後補跑同一流程通過（auto 權限模式）。Phase 2 仍為候選，啟動前需另立 spec；任務順序不代表授權外部交付。
+2026-10-12 完成 MM-08／MVP-02，SPEC-001 Implemented；真實 Codex 與 Claude Code 流程通過。2026-10-13 P2-01 規格啟動後經 reviewer核對修訂：SPEC-002 Ready、ADR-0007 Accepted（取代 ADR-0006）、DS-01 Done，scheduler runtime尚未實作。P2-02–P2-04 仍為候選；任務順序不代表授權外部交付。
 
 ## 任務索引
 
@@ -19,7 +19,11 @@
 | MM-07 | Skill／protocol／reference 同步與整體驗證 | Done | MM-05、MM-06 | SPEC-001 AC-01–AC-14 |
 | MM-08 | 新格式真實 provider smoke test | Done | MM-07 | SPEC-001 AC-14；延續 MVP-02 缺口 |
 | MVP-02 | 現有 MVP 真實 Worker smoke test | Done | 現有 MVP | [MM-08 同一證據](reviews/MM-08-validation.md) |
-| P2-01 | DAG Scheduler | Todo | MVP 驗證及另立 spec | design §17、§32 |
+| P2-01 | DAG Scheduler | In progress | MVP-02、DS-01–DS-04 | SPEC-002；ADR-0007 |
+| DS-01 | Scheduler 契約、ADR 與驗收拆解 | Done | MVP-02、DOC-02 | SPEC-002 §1–9；ADR-0007 |
+| DS-02 | 固定 base binding 與共用 launch gate | Todo | DS-01 | SPEC-002 §4–5、§7 |
+| DS-03 | 排程預覽、一次 run 與恢復 | Todo | DS-02 | SPEC-002 §3–4、§6 |
+| DS-04 | Scheduler 整體驗收與發布文件同步 | Todo | DS-02、DS-03 | SPEC-002 AC-01–AC-12 |
 | P2-02 | Event Watcher | Todo | MVP 驗證及另立 spec | design §26、§32 |
 | P2-03 | Automatic Verification | Todo | MVP 驗證及另立 spec | design §24、§32 |
 | P2-04 | Routing／Retry Policy | Todo | MVP 驗證及另立 spec | design §21–22、§25、§32 |
@@ -28,13 +32,54 @@ MVP-02 的原驗收條件由 MM-08 真實 provider 流程涵蓋；兩者連結�
 
 ## 任務完成條件與接續
 
+### P2-01 — DAG Scheduler
+
+- 目標：按同 manager DAG 與即時額度，自動啟動已註冊且具備必要依賴成果的 queued tasks；保留人工 acceptance、整合與固定 base。
+- 狀態：In progress；本輪開始規格工作，runtime 尚未實作。
+- 完成條件：DS-01–DS-04 完成，SPEC-002 AC-01–AC-12 有 runtime 證據；完整既有回歸與必要真實 tmux focused tests 通過，已發布使用文件同步。
+- 決策／證據：[SPEC-002](specs/002-dag-scheduler.md)、[ADR-0007](adr/0007-task-base-proof-and-launch-gates.md)、[DS-01 review](reviews/DS-01-contract-review.md)。
+- 接續：DS-02；P2-02 Watcher 等仍需另立 spec，不與此次合併。
+
+### DS-01 — 契約與拆解
+
+- 目標：決定 task 註冊時機、committed dependency base 證據、capacity、一次排程與中斷行為。
+- 結果：初版缺口經 reviewer對照後修正，SPEC-002重新 Ready，ADR-0007 Accepted／ADR-0006 Superseded；保留固定 base／分階段註冊／明確 bind／有界 run，補同一歷史 proof gate、三層 eligibility、完整 reconcile鎖與 intent／pin／rebind。12個 AC、原14項 walkthrough及12項 reviewer核對。
+- 驗證：source inspection 與文件檢查，詳見 [DS-01 review](reviews/DS-01-contract-review.md)／[progress](progress.md)；不是 scheduler runtime 或模型驗收。
+- 接續：DS-02；不新增可用 CLI、不啟動 Worker。
+
+### DS-02 — Base binding 與 launch gate
+
+- 目標：實作 `schedule bind`、binding／歷史／pin與故障 intent、同一歷史 task-base proof helper、三層 gate，以及所有 launch副作用前的 durable starting intent。
+- 受影響範圍：`scripts/manager`、必要的 `scripts/lib/` helper、`tests/test_manager.py`；已實作命令的 runtime guidance 同步，不預先發布未完成的 run。
+- 完成條件：bind／同 base expected-binding替換原子提交且留歷史，有效同 bind重播零寫入；拒絕 base mismatch／stale expected-binding／proof篡改／跨 manager／unknown version；pin與 registry中斷可診斷；dirty accepted artifact實際進入 dependent Worker；bind／launch皆允許 integration／target前進與另一個 combined verify running，來源失效仍拒絕；launch intent早於 worktree／assignment，partial publication明確診斷；手動 valid tree reuse及 migration固定 base相容。
+- 驗收對應：AC-03–AC-06、AC-08–AC-11的 binding／launch範圍；全部 tasks try-lock／busy標記、來源／owner fencing涵蓋必要 gate。
+- 證據：待實作／驗證，不沿用 MM 證據宣稱完成。
+- 接續：DS-03。
+
+### DS-03 — Status／run 與恢復
+
+- 目標：純讀 DAG 預覽、明確分類／排序、一次有界 run、run journal 與 launch 中斷診斷。
+- 受影響範圍：runtime CLI／helpers、行為 tests、已完成命令的 runtime guidance。
+- 完成條件：run/run 與 run/spawn 不超額／重複啟動，busy 分支不阻擋獨立工作，limit／初始 budget 正確；owner takeover、partial launch、SIGKILL、partial worktree 均保留 artifacts 且不盲目重啟；status 零寫入。
+- 驗收對應：AC-01–AC-02、AC-07–AC-10、AC-12；DS-02 gate 在每次 launch 重查。
+- 證據：待實作／驗證。
+- 接續：DS-04。
+
+### DS-04 — 整體驗收與文件
+
+- 目標：逐項 AC 證據對照、既有 lifecycle 回歸、隔離 tmux focused tests、發布文件與進度同步。
+- 完成條件：AC-01–AC-12 均有行為證據，完整 `tests/test_manager.py`、`tests/validate_docs.py` 與必要 focused tests 通過；SKILL／protocol／runtime reference／README 反映真實可用能力，SPEC-002 才改 Implemented、P2-01 才 Done。
+- 邊界：fake-provider tests 不等於真實模型驗收；adapter 未變更不重跑既有 MM-08 lifecycle。若需要新的 provider probe，另記明確範圍與結果。
+- 證據：待實作／驗證。
+- 接續：P2-02 另立 spec；本任務不啟動 Watcher 或自動驗證。
+
 ### DOC-02 — 單一 skill repository
 
 - 目標：將 skill 入口、runtime、protocols 與 templates 移至根目錄；集中開發測試至 `tests/`、設計與驗收資料至 `docs/`；更新 README、相對連結及工具路徑。
 - 完成條件：skill 格式、文件 links／CLI examples、完整行為回歸、獨立安裝 payload 均通過；runtime／adapters 與 41 份 archived provider evidence 保持原值。
 - 結果：根目錄單一 skill 結構完成；107 項完整回歸（106 通過、1 real-only skip）、2 項真實 tmux focused tests、3 項獨立安裝 payload tests、skill／UI YAML／文件／hash 檢查通過。真實 provider helper 僅 prepare，沒有啟動 provider。
 - 證據：[ADR-0005](adr/0005-single-skill-repository.md)、[DOC-02 validation](reviews/DOC-02-layout-validation.md)、[progress](progress.md)。使用者要求先將結構調整 commit/push 至 main，再自行進行 GitHub rename；提交狀態以 Git status/log 為準。
-- 接續：P2-01 仍需另立 spec；本任務不開始 Phase 2。
+- 當時接續：P2-01 需另立 spec；DOC-02 不開始 Phase 2。後續已完成 DS-01，現行接續為 DS-02。
 
 ### DOC-01 — 文件結構與設計初稿
 
@@ -113,4 +158,4 @@ MVP-02 的原驗收條件由 MM-08 真實 provider 流程涵蓋；兩者連結�
 - 證據：[MM-08 validation](reviews/MM-08-validation.md)、[結果與 artifact hashes](reviews/mm08-results.json)；初版 2／修正版 4 項 Worker tests、Manager 2 個 task checks、1 個 combined check 通過，current acceptance／combined eligible 再核對通過；21 份審查後證據不含 credentials/raw native logs。原 MVP-02 同一證據符合驗收，兩者 Done；SPEC-001 Implemented。
 - 邊界／接續：Claude Code 2.1.296 登入後補跑通過（host auto 權限模式；未驗證 default 手動核准模式）；原生 sandbox/permissions 保留。Helper trust 無 confirm／重播拒絕、語法／文件／skill／diff 檢查通過。MM-07 已 push `c58cbf7`；MM-08 與 Claude 補驗已提交為 `86e5273`，2026-10-13 核對本機 `origin/docs/manager-multi-session-spec` 指向同一提交。Phase 2 需另立 spec，不自動開始。
 
-P2 任務目前只是候選。啟動前按 README 流程另立功能 spec／必要 ADR 與具體驗收條件；不以這張表代替規格。
+P2-01 已完成規格並開始追蹤實作子任務。P2-02–P2-04 仍只是候選，啟動前按 README 流程另立功能 spec／必要 ADR 與具體驗收條件；不以這張表代替規格。

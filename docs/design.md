@@ -635,6 +635,8 @@ Manager 主動向 User 發訊息原則上只有四種類型：
 
 ## 17. Task DAG
 
+目前開發契約見 [SPEC-002](specs/002-dag-scheduler.md) 與 [ADR-0007](adr/0007-task-base-proof-and-launch-gates.md)：固定 base／分階段註冊、歷史依賴 proof binding／pin、三層 launch gate與一次有界排程。2026-10-13經 reviewer核對修訂後 Ready，runtime尚未實作；下方保留原始架構願景。
+
 Manager 不應只是建立 Todo List，而應建立 dependency-aware Task DAG。
 
 例如：
@@ -1090,6 +1092,8 @@ git worktree isolation
 ---
 
 ## 32. Phase 2
+
+2026-10-13 P2-01 已開始規格與任務拆解，見 [SPEC-002](specs/002-dag-scheduler.md)／[DS-01–DS-04](tasks.md)。其他項目仍需各自立 spec，不能從此清單推論為已實作。
 
 MVP 穩定後加入：
 

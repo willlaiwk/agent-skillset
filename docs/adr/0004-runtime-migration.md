@@ -41,4 +41,4 @@ Historical acceptance/verification 原文保存；當前資格清空，已接受
 
 MM-06 提供 explicit dry-run/hash/quiescence、common journal/backup、object pack 及 unique backup pins、保留舊 refs／建立新 refs、Git move／只切 symbolic HEAD、歷史資格失效與 forward resume。備份保存 `.git` pointer 原文為獨立 inert 檔案，不讓 backup tree 共用 live private index；所有 staged blobs 及歷史 commit objects 一併封存。來源控制資料保留為 retired history，完成 tombstone 及 journal/destination 核對後才啟用 v2。
 
-證據見 [MM-06 validation](../reviews/MM-06-validation.md) 與 [操作流程](../../../skills/manager/references/runtime.md#explicit-v1-migration)。只遷移暫存 v1 fixtures，沒有搬移使用者真實專案；quiescence 仍是合作前提，無自動停止／rollback／cleanup，真實 Agent 驗證仍未完成。
+證據見 [MM-06 validation](../reviews/MM-06-validation.md) 與 [操作流程](../../references/runtime.md#explicit-v1-migration)。只遷移暫存 v1 fixtures，沒有搬移使用者真實專案；quiescence 仍是合作前提，無自動停止／rollback／cleanup，真實 Agent 驗證仍未完成。

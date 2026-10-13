@@ -12,7 +12,7 @@
 
 ## 行為驗證
 
-18 項 migration tests 加入 [test_manager.py](../../../skills/manager/scripts/test_manager.py)，搭配既有 namespace／ownership／integration／delivery 回歸：
+18 項 migration tests 加入 [test_manager.py](../../tests/test_manager.py)，搭配既有 namespace／ownership／integration／delivery 回歸：
 
 | 契約 | 情境與觀察 |
 | --- | --- |
@@ -37,8 +37,8 @@
 | 靜態檢查 | 8 份 Python 語法、runtime 可執行權限、22 份 Markdown 的 142 個本地 links/anchors／fences、git diff --check 通過 |
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 Focused migration 18 項曾通過（71.528s）；其後補強非 object report 診斷、immutable inventory 檔案、destination mode intent 與操作文件；修正後 focused 18 項再通過（72.568s），損壞 namespace 清單查閱回歸 1 項通過（0.434s），最終以上述完整回歸為準。初輪完整回歸發現清單查閱會受旁邊的損壞 namespace 影響，已修正；同輪在執行中補入 inventory 檔案，造成已載入舊 helper 與新 CLI 格式不同，最終改由全新程序重跑兩套完整回歸。非 object／missing completion 的重點補驗 1 項通過（5.479s）。

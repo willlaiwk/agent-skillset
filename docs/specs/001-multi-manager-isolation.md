@@ -39,7 +39,7 @@ ID 規則：1–64 字元，僅小寫 ASCII 字母、數字、`-`、`_`，首字
 
 ## 4. 目標 CLI
 
-以下介面已於 MM-02–MM-06 提供，MM-07 deterministic 整體組合與 MM-08 真實 Codex 驗證通過；第二 provider 未登入、未驗證。已實作使用方式與限制見 [runtime reference](../../../skills/manager/references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
+以下介面已於 MM-02–MM-06 提供，MM-07 deterministic 整體組合與 MM-08 真實 Codex 驗證通過；第二 provider 未登入、未驗證。已實作使用方式與限制見 [runtime reference](../../references/runtime.md)。全域參數置於子命令前；`migrate` 也接受子命令後的目的 `--manager-id`，兩處 selector 衝突時拒絕。
 
 ```sh
 manager --root /project init
@@ -239,7 +239,7 @@ Validated 核對 counts、task/dependency/attempt、ack 歷史、所有內容、
 
 V2 task 命令明確攜帶 manager selector，不猜舊命令的目的地。一般命令對 v1 回報 migration 指引、對不支援版本明確報錯；完成 tombstone 與 pending journal 有獨立診斷。Readonly 操作不得偷偷 initialize 或修復。
 
-各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 完成整體 deterministic 驗證與文件同步，MM-08 完成 AC-14 必要的真實 Codex 驗收及第二 provider 狀態記錄，功能為 Implemented；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../../skills/manager/references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
+各 task 實作時同步其必要 SKILL／protocol／runtime reference／範例，MM-07 完成整體 deterministic 驗證與文件同步，MM-08 完成 AC-14 必要的真實 Codex 驗收及第二 provider 狀態記錄，功能為 Implemented；這份 spec 不是已支援命令的使用手冊。Migration 需依 [runtime 流程](../../references/runtime.md#explicit-v1-migration) 明確執行；遷移前不得讓新舊 runtime 同時寫來源，不因 migration 啟用 merge／push／部署或變更原生 provider 權限。
 
 ## 10. 驗收情境
 

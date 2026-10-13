@@ -12,7 +12,7 @@
 
 ## 行為驗證
 
-17 項 delivery tests 加入 [test_manager.py](../../../skills/manager/scripts/test_manager.py)，搭配既有 integration／ownership／namespace 回歸：
+17 項 delivery tests 加入 [test_manager.py](../../tests/test_manager.py)，搭配既有 integration／ownership／namespace 回歸：
 
 | 契約 | 實際情境與觀察 |
 | --- | --- |
@@ -39,8 +39,8 @@
 最終完整回歸已包含 17 項 delivery tests 與失敗方重新整合／驗證／交付、收據遺失的永久 ambiguous、readonly bytes/mtime 的補強。初輪 15 項中 checkout fixture 誤用 full ref 造成 detached checkout，已改用 branch 名並補驗 unlocked missing/prunable entry；沒有放寬 gate。初次完整 85 項與中間 17 項 focused tests 通過後，因永久成功／診斷與額外 fixture 補強，才重跑上述最終 86 項兩套完整回歸。
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 ## 限制與接續

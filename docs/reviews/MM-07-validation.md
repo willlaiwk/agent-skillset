@@ -4,7 +4,7 @@
 
 ## 組合驗證
 
-[test_manager.py](../../../skills/manager/scripts/test_manager.py) 新增三項行為回歸，沿用原有全部測試：
+[test_manager.py](../../tests/test_manager.py) 新增三項行為回歸，沿用原有全部測試：
 
 | 測試 | 實際流程與結果 |
 | --- | --- |
@@ -31,10 +31,10 @@
 
 ## 文件與介面核對
 
-- 同步 SKILL、manager protocol、runtime reference、task template 與專案入口；worker protocol、escalation policy、adapter flags 經核對沿用。新增 [migration → acceptance → dependency → delivery 範例](../../../skills/manager/references/runtime.md#continue-from-migrated-acceptance-to-dependent-work)，保留 private credential、disabled historical assignment、fresh review、committed candidate、expected-OID/receipt 與 checked-out target 拒絕。
+- 同步 SKILL、manager protocol、runtime reference、task template 與專案入口；worker protocol、escalation policy、adapter flags 經核對沿用。新增 [migration → acceptance → dependency → delivery 範例](../../references/runtime.md#continue-from-migrated-acceptance-to-dependent-work)，保留 private credential、disabled historical assignment、fresh review、committed candidate、expected-OID/receipt 與 checked-out target 拒絕。
 - 明示現有註冊行為：task 註冊即解析固定 base；既有 queued task（含 migrated task）不能用 spawn 覆寫 base，目前沒有 task-edit API。需新 base 時先準備 integration commit，再以新 task ID 登錄，保留原任務與 history 並在 plan 記錄接續。這是既有實作限制的澄清，未增加 runtime API。
 - 修正 spec 的 selector 文字：migrate 可同時提供兩處相同 ID，只有衝突值拒絕；runtime 行為未變。
-- [mm07_validate.py](mm07_validate.py) 可重跑所有維護中 Markdown 的本地 links/anchors/fences，以及 SKILL/reference/SPEC-001 shell 範例的真實 CLI parser。只驗語法，不執行範例或推論授權／semantic 成功；`design.md` 原 v1/未來 CLI sketches 保留，依其開頭聲明排除 parser 驗證。
+- [validate_docs.py](../../tests/validate_docs.py) 可重跑所有維護中 Markdown 的本地 links/anchors/fences，以及 SKILL/reference/SPEC-001 shell 範例的真實 CLI parser。只驗語法，不執行範例或推論授權／semantic 成功；`design.md` 原 v1/未來 CLI sketches 保留，依其開頭聲明排除 parser 驗證。
 
 ## 執行證據
 
@@ -49,9 +49,9 @@
 | 靜態檢查 | 10 份 Python 語法、runtime 可執行權限、23 份 Markdown／160 個本地 links/anchors／fences、66 個現行 CLI 範例 parser、git diff --check 通過 |
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
-python3 docs/manager-skill-design/reviews/mm07_validate.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
+python3 tests/validate_docs.py
 ```
 
 首輪 focused tests 誤在既有 migrated queued task 上指定新 base，runtime 正確拒絕覆寫定義；改為測拒絕與保留，再建立 fresh dependent task，並補上述文件限制。修正後此完整組合測試單獨通過（15.929s）。初次 focused real-tmux 在 sandbox 內無法建立 socket；依既有主機許可重跑完整專用 fixture，不繞過主機權限，不把環境限制算作 runtime 缺陷。

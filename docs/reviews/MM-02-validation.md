@@ -2,7 +2,7 @@
 
 - 日期：2026-10-09–2026-10-10；起始 commit：`68cc99f`。
 - 規格：[SPEC-001 §3–5](../specs/001-multi-manager-isolation.md#3-manager-身分與選擇契約)、AC-01–AC-05；[MM-02](../tasks.md#mm-02--namespace-與路由)。
-- 實作：[CLI](../../../skills/manager/scripts/manager)、[namespace helper](../../../skills/manager/scripts/lib/namespace.py)、[行為測試](../../../skills/manager/scripts/test_manager.py)。
+- 實作：[CLI](../../scripts/manager)、[namespace helper](../../scripts/lib/namespace.py)、[行為測試](../../tests/test_manager.py)。
 - 範圍：v2 ID/selector、state/path/branch/tmux、launch identity、report/inbox/ack、read-only inspection 與 runtime 使用說明。基本 owner claim/credential guard 是讓 namespace 生命週期可執行的 MM-03 前置；不宣稱完整 ownership/handoff 已驗收。
 
 ## 1. 行為與證據
@@ -24,8 +24,8 @@
 平台：macOS／POSIX；Python 3.9.6；Git 2.55.0。所有 repo、worker binaries、tmux sockets 與 credential 都在測試自己的 TemporaryDirectory；cleanup 只管理自己的 artifacts/server。未呼叫模型/API、未變動真實專案資料或既有 tmux session。
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 - 預設模式：35 項，34 通過／1 real-only 跳過，43.200 秒。

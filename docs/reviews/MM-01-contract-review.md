@@ -3,7 +3,7 @@
 - 日期：2026-10-09。
 - 範圍：[SPEC-001](../specs/001-multi-manager-isolation.md) Q-01–Q-04；[ADR-0002](../adr/0002-manager-identity.md)／[ADR-0003](../adr/0003-isolated-integration.md)／[ADR-0004](../adr/0004-runtime-migration.md)。
 - 結論：阻擋實作的契約已有 API、前置條件、失敗／恢復行為，可進入 MM-02；不是 v2 runtime 驗收。
-- 基線：已讀 `skills/manager/scripts/manager` 的 init/load、launch/report、reconcile、verify/accept 與 main，以及現行 skill/protocol/reference。V1 使用 version 1、單 root namespace；status/peek 會 reconcile 寫入；verify 全程持 registry lock，report 使用 task report lock；accept 只接受隔離成果。
+- 基線：已讀 `scripts/manager` 的 init/load、launch/report、reconcile、verify/accept 與 main，以及現行 skill/protocol/reference。V1 使用 version 1、單 root namespace；status/peek 會 reconcile 寫入；verify 全程持 registry lock，report 使用 task report lock；accept 只接受隔離成果。
 
 ## 1. 契約 walkthrough（文件推演，未執行 v2 CLI）
 
@@ -26,10 +26,10 @@
 
 平台：macOS／POSIX；Python 3.9.6；Git 2.55.0。只在 Python TemporaryDirectory 的獨立 repository／linked worktrees 執行，不呼叫 provider、tmux 或 manager CLI，也不遷移真實專案。
 
-可重跑：[mm01_git_primitives.py](mm01_git_primitives.py)；當次結果：[mm01-git-results.json](mm01-git-results.json)。從 repository root 執行：
+可重跑：[probe_git_primitives.py](../../tests/probe_git_primitives.py)；當次結果：[mm01-git-results.json](mm01-git-results.json)。從 repository root 執行：
 
 ```sh
-python3 docs/manager-skill-design/reviews/mm01_git_primitives.py
+python3 tests/probe_git_primitives.py
 ```
 
 八項 assertions 通過：

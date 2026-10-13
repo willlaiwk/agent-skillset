@@ -9,6 +9,7 @@
 | ID | 目標 | 狀態 | 依賴 | 對應規格／決策 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | 文件結構與此次設計初稿 | Done | 無 | ADR-0001；SPEC-001 初稿 |
+| DOC-02 | 單一 manager-skill repository 結構與路徑同步 | Done | MM-08 | ADR-0005 |
 | MM-01 | 收斂多 manager 的介面與未決契約 | Done | DOC-01 | SPEC-001 Q-01–Q-04；ADR-0002–0004 |
 | MM-02 | Manager selector、namespace 與 worker 路由 | Done | MM-01 | SPEC-001 §3–5；ADR-0002 |
 | MM-03 | 同 ID 主控所有權與交接 | Done | MM-02 | SPEC-001 §6；ADR-0002 |
@@ -26,6 +27,14 @@
 MVP-02 的原驗收條件由 MM-08 真實 provider 流程涵蓋；兩者連結同一證據結案，不重複執行同樣 smoke test。Claude 另以獨立 fixture 實際補跑，不以 Codex 結果推論。
 
 ## 任務完成條件與接續
+
+### DOC-02 — 單一 skill repository
+
+- 目標：將 skill 入口、runtime、protocols 與 templates 移至根目錄；集中開發測試至 `tests/`、設計與驗收資料至 `docs/`；更新 README、相對連結及工具路徑。
+- 完成條件：skill 格式、文件 links／CLI examples、完整行為回歸、獨立安裝 payload 均通過；runtime／adapters 與 41 份 archived provider evidence 保持原值。
+- 結果：根目錄單一 skill 結構完成；107 項完整回歸（106 通過、1 real-only skip）、2 項真實 tmux focused tests、3 項獨立安裝 payload tests、skill／UI YAML／文件／hash 檢查通過。真實 provider helper 僅 prepare，沒有啟動 provider。
+- 證據：[ADR-0005](adr/0005-single-skill-repository.md)、[DOC-02 validation](reviews/DOC-02-layout-validation.md)、[progress](progress.md)。使用者要求先將結構調整 commit/push 至 main，再自行進行 GitHub rename；提交狀態以 Git status/log 為準。
+- 接續：P2-01 仍需另立 spec；本任務不開始 Phase 2。
 
 ### DOC-01 — 文件結構與設計初稿
 

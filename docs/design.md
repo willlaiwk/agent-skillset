@@ -5,7 +5,9 @@
 **Runtime:** tmux + Git Worktree + Filesystem State  
 **Goal:** 將任意 Coding Agent 轉化為可自主規劃、委派、監督、驗證與回報的 Engineering Manager
 
-文件入口與維護方式見 [README](README.md)；實作現況見 [progress](progress.md)，開發任務見 [tasks](tasks.md)。本文件包含尚未實作的願景，不是目前 CLI 的使用手冊；已實作介面以 [runtime reference](../../skills/manager/references/runtime.md) 為準。
+文件入口與維護方式見 [README](README.md)；實作現況見 [progress](progress.md)，開發任務見 [tasks](tasks.md)。本文件包含尚未實作的願景，不是目前 CLI 的使用手冊；已實作介面以 [runtime reference](../references/runtime.md) 為準。
+
+2026-10-13 專案調整為單一 `manager-skill` repository；目前檔案結構見 [專案 README](../README.md#repository-layout)，決策見 [ADR-0005](adr/0005-single-skill-repository.md)。下方第 6 節保留原始架構草圖，實際 runtime 為根目錄 `scripts/manager` 與 Python `scripts/lib/`，開發測試位於 `tests/`。
 
 2026-10-09 完成 [SPEC-001：多 Manager 隔離、整合與遷移](specs/001-multi-manager-isolation.md) 的 MM-01 契約收斂（ADR-0002–0004 Accepted），涉及本文件第 7、11、18–19、23、25–26、30 節。採用持久 manager ID namespace、明確 owner generation/token 交接、各 manager 獨立整合工作樹、common-directory 短交付 gate 與 v1 遷移。首版 gate 僅支援未 checkout 本地分支 fast-forward；migration 保留歷史與舊 refs，採完整 backup/journal、資格重驗與 forward resume。2026-10-10 MM-02 已實作 namespace／路由與純查閱，MM-03 已完成主控釋放／接管、交接恢復與長操作 fencing，證據見 [MM-03 validation](reviews/MM-03-validation.md)。MM-04 已實作獨立 integration tree 與 combined evidence，證據見 [MM-04 validation](reviews/MM-04-validation.md)。MM-05 已實作 common 本地交付 gate、expected-OID transaction／receipt 與中斷診斷，證據見 [MM-05 validation](reviews/MM-05-validation.md)。2026-10-11 MM-06 已實作 explicit migration、backup/object archive、歷史資格失效與 forward resume，證據見 [MM-06 validation](reviews/MM-06-validation.md)。2026-10-12 MM-07 完成 deterministic 整體組合回歸與文件同步，AC 證據對照見 [MM-07 validation](reviews/MM-07-validation.md)。2026-10-12 MM-08 真實 Codex report/ack/correction／獨立驗收／integration 隔離通過，Claude Code 補跑亦通過，證據見 [MM-08 validation](reviews/MM-08-validation.md)。MM-08/MVP-02 Done，SPEC-001 Implemented；Phase 2 待另立 spec。原章節保留為 v1 架構基線；新功能以 SPEC-001 為行為契約，不在本文件複製細節。
 

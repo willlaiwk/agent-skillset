@@ -1,18 +1,27 @@
 # Manager Skill — 當前進度與 Session 接續
 
-最後更新：2026-10-13。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`（已 push）；MM-08 與 Claude 補驗：`86e5273`。2026-10-13 核對 HEAD 與本機 `origin/docs/manager-multi-session-spec` 均指向 `86e5273`；後續以實際 status/log 為準。
+最後更新：2026-10-13。MVP 基線：`d8b0ca5`；多 manager 初稿：`0b4083e`；契約定案：`68cc99f`。MM-02 提交：`385e331`；MM-03：`b302ee8`；MM-04：`11644a4`。MM-05：`a5521bb`；MM-06：`81b2104`；MM-07：`c58cbf7`；MM-08 與 Claude 補驗：`86e5273`；提交狀態文件：`77d55f4`。原分支已 fast-forward 合併並推送至 main；DOC-02 結構調整完成，提交／推送狀態以 Git status/log 與 origin/main 為準；使用者要求先 commit/push，再自行進行 GitHub rename。
 
-**目前狀態：MM-01–MM-08／MVP-02 Done，SPEC-001 Implemented。真實 Codex 0.162.1 完成 report/ack/correction、獨立驗收與 integration 隔離；Claude Code 2.1.296 於登入後以 auto 權限模式通過同一 lifecycle。MM-07 預設 107 項（106 通過、1 real-only skip）、真實 tmux 107 項全通過；本輪 runtime/adapters 未改。Phase 2 仍為待另立 spec 的候選。**
+**目前狀態：MM-01–MM-08／MVP-02 Done，SPEC-001 Implemented；DOC-02 單一 repository 結構調整 Done。Skill payload 位於根目錄，開發工具位於 tests/，設計與驗收文件位於 docs/。本輪 107 項回歸（106 通過、1 real-only skip）、2 項真實 tmux focused tests 與 3 項獨立安裝 payload tests 通過；runtime/adapters 未改。真實 Codex／Claude lifecycle 沿用 MM-08 證據，Phase 2 仍為待另立 spec 的候選。**
 
 ## 新 Session 從這裡開始
 
 1. 先執行 `git status --short`、`git log -3 --oneline`，確認此紀錄之後是否有新變更；保留既有工作。
 2. 閱讀 [文件入口](README.md)、本文件與 [任務清單](tasks.md)，再按任務閱讀 spec／ADR／[設計文件](design.md) 的相關章節；原 MVP／Phase 2 邊界在第 31–32 節。
-3. 閱讀 [SKILL.md](../../skills/manager/SKILL.md)、[runtime reference](../../skills/manager/references/runtime.md) 與 [manager protocol](../../skills/manager/references/manager-protocol.md)，理解現在已提供的指令。
+3. 閱讀 [SKILL.md](../SKILL.md)、[runtime reference](../references/runtime.md) 與 [manager protocol](../references/manager-protocol.md)，理解現在已提供的指令。
+   單一 repository 調整已通過 [DOC-02 validation](reviews/DOC-02-layout-validation.md)；開發命令見 [專案 README](../README.md#development-and-validation)。GitHub rename 由使用者處理，rename 後再核對 origin URL。
 4. SPEC-001 已完成；先讀 [MM-08 validation](reviews/MM-08-validation.md) 與 [結果／artifact hashes](reviews/mm08-results.json)，避免重跑已完成的真實 smoke。暫存 source/state/private credentials 保留，專用 tmux server 已停止。後續候選為 P2-01 DAG Scheduler；啟動前依 README 另立 spec、必要 ADR 與具體驗收條件，先決定 committed dependency base／task 註冊時機及 worker 額度，不能只看 done 就從舊 base 啟動。Claude 或其他版本若需驗證，另記證據，不從 Codex 結果推論。
 5. 任務結束或交接前更新本文件：完成項目、實際驗證、遇到的阻塞、變更／commit，以及下一個可執行任務。未執行的驗證維持「未驗證」。
 
 本文件追蹤這個 skill 的開發進度。使用 skill 管理其他專案時，該專案的任務狀態與計畫另存於其 Git 根目錄的 `.manager/`。
+
+## 2026-10-13：單一 manager-skill repository 結構調整
+
+- 使用者將於 GitHub 把專案改名為 `manager-skill`；本輪只整理 repository 內容，保留 skill 名稱 `manager`，不改本機 checkout 名稱、Git remote 或已安裝的其他 skill 副本。
+- 原 `skills/manager/` 的 SKILL／agents／scripts／references／templates 移至根目錄；原 `docs/manager-skill-design/` 移至 `docs/`，行為測試與三個開發 helper 集中至 `tests/`。決策見 [ADR-0005](adr/0005-single-skill-repository.md)，追蹤於 DOC-02。
+- 同步專案 README、文件相對 links、範例命令與 helper／test 的 CLI 定位；runtime／adapters 不變。Archived provider evidence 原樣保留，舊絕對路徑仍代表歷史執行位置。
+- 最終驗證：107 項預設回歸（106 通過、1 real-only skip，375.486s）、2 項真實 tmux focused tests（3.314s）、3 項獨立安裝 payload tests（5.100s）通過；skill／UI YAML／文件 links／67 個 CLI examples、11 份 Python 語法、runtime 可執行權限、8 項 Git primitive assertions 與 diff check 通過。13 份 skill/runtime payload files、兩份 manifests 與 41 份 archived evidence 原值相同，原 81 份追蹤檔案均保留；證據見 [DOC-02 validation](reviews/DOC-02-layout-validation.md)。
+- 真實 provider helper 僅執行 `prepare --agent codex`，暫存 fixture `/private/tmp/mm08-real-provider-dafdiem7` 的 runtime 指向新 `scripts/manager`，沒有 spawn／trust／模型使用量。本輪不重跑已完成的真實 provider lifecycle；DOC-02 Done；使用者要求將結構調整 commit/push 至 main，GitHub rename 隨後由使用者處理。
 
 ## 2026-10-13：提交狀態核對
 
@@ -32,7 +41,7 @@
 
 - 使用者要求 commit/push 後接續下一步；MM-07 提交為 `c58cbf7`，已推送 `origin/docs/manager-multi-session-spec`，再接 MM-08。
 - 本機 Codex 0.162.1 已用 ChatGPT 登入，configured model 為 gpt-6.1-sol／high reasoning；Claude Code 2.1.296 未登入，沒有啟動第二 provider。原生 workspace-write 與權限檢查保留，不改全域 permissions。
-- [mm08_provider_smoke.py](reviews/mm08_provider_smoke.py) 建立 `/private/tmp/mm08-real-provider-elquvjt2`，包含隔離 Git repo、獨立 tmux socket、同名 alpha/beta T001、beta integration tree、dirty/staged/untracked 主 checkout 與 private owner credential。Codex Worker 已由 runtime spawn，停在原生 folder-trust 畫面；等待使用者明確確認，不自動通過。Main HEAD/index/files 與 beta namespace bytes/mtime 保留。
+- [real_provider_smoke.py](../tests/real_provider_smoke.py) 建立 `/private/tmp/mm08-real-provider-elquvjt2`，包含隔離 Git repo、獨立 tmux socket、同名 alpha/beta T001、beta integration tree、dirty/staged/untracked 主 checkout 與 private owner credential。Codex Worker 已由 runtime spawn，停在原生 folder-trust 畫面；等待使用者明確確認，不自動通過。Main HEAD/index/files 與 beta namespace bytes/mtime 保留。
 - 尚未有真實 Worker structured completion/ack/verification/acceptance；MM-08/MVP-02 未完成，SPEC-001 維持 Implementing。證據暫存在 fixture 的 evidence/ 與 commands.jsonl，private credential 不進 repository。
 
 ## 2026-10-12：MM-07 完成與下一步
@@ -41,7 +50,7 @@
 - 新增 migration → historical source 拒絕／fresh acceptance → dirty snapshot 整合 → fresh dependent committed base → correction/ack/verify/accept → release/claim → competing delivery／Git conflict／new proof／receipt 的完整組合回歸。保留 user staged/working/untracked files、HEAD/index、accepted source、backup/history/舊 refs，完成後多 namespace 查閱與 migrate no-op 維持 bytes/mtime。
 - 補長 combined checks 中 takeover、新 assignment retry/report/ack、同名 task 路由拒絕、每 manager quota 與其他 manager delivery；舊 run fenced，reconcile/new verify 後才可交付。另驗 global/subcommand/same-value/conflicting migration selectors。
 - 同步 SKILL/manager protocol/runtime/template/專案與設計入口；worker protocol/escalation/adapter flags 核對一致。澄清 task 註冊即固定 base、existing queued 無 edit API，改 base 需新 task ID；spec 修正相同 selector 可並存的文字，不變更 runtime 行為。
-- 證據：[MM-07 validation](reviews/MM-07-validation.md) 含 AC-01–AC-14 deterministic 對照。最終預設 107 項（106 通過、1 real-only skip，312.805s）；真實 tmux 107 項全通過（342.166s）。YAML 成功路徑 1 項（1.209s）、skill/UI YAML、10 份 Python 語法／runtime 可執行權限、Markdown links/anchors/fences 與 66 個現行 CLI 範例 parser、diff check 通過；文件可用 [mm07_validate.py](reviews/mm07_validate.py) 重跑。
+- 證據：[MM-07 validation](reviews/MM-07-validation.md) 含 AC-01–AC-14 deterministic 對照。最終預設 107 項（106 通過、1 real-only skip，312.805s）；真實 tmux 107 項全通過（342.166s）。YAML 成功路徑 1 項（1.209s）、skill/UI YAML、10 份 Python 語法／runtime 可執行權限、Markdown links/anchors/fences 與 66 個現行 CLI 範例 parser、diff check 通過；文件可用 [validate_docs.py](../tests/validate_docs.py) 重跑。
 - 真實 tmux 初次沙箱 socket 受限，依既有主機許可通過完整專用 server；只有假的 Codex/Claude Worker、沒有模型/API。MM-07 Done；MM-08/MVP-02 Todo，SPEC-001 維持 Implementing。下一步 MM-08，尚未 commit/push；Git status/log 為準。
 
 ## 2026-10-11：MM-05 提交與 MM-06 完成
@@ -97,7 +106,7 @@
 ## 2026-10-09：MM-01 定案紀錄
 
 - 定案 Q-01–Q-04：explicit owner claim/release/takeover 與長操作 fencing、未 checkout 本地 target 的 transaction/receipt gate、保留 branch/歷史且重驗資格的 forward migration，以及 source-quiesced/hash/locks 停止契約。詳細行為只維護在 SPEC-001，ADR 說明取捨。
-- 證據：[contract review](reviews/MM-01-contract-review.md) 的 12 項 walkthrough、[可重跑 Git probe](reviews/mm01_git_primitives.py) 與 [當次結果](reviews/mm01-git-results.json)。8 項 Git assertions 通過；另確認 expected OID 不防止同 OID symbolic-ref 切換，已明示合作式 workflow 邊界。
+- 證據：[contract review](reviews/MM-01-contract-review.md) 的 12 項 walkthrough、[可重跑 Git probe](../tests/probe_git_primitives.py) 與 [當次結果](reviews/mm01-git-results.json)。8 項 Git assertions 通過；另確認 expected OID 不防止同 OID symbolic-ref 切換，已明示合作式 workflow 邊界。
 - 實驗只在暫存 Git repo 執行，未啟動 provider/tmux/manager runtime，未遷移真實資料。本輪沒有修改 `skills/manager/`，未重跑既有 runtime tests；下方歷史結果仍只對應 MVP 基線。
 - 同步 README/design/task/progress、SPEC-001 與 ADR-0002–0004。文件驗證：10 份 Markdown、66 個本地連結／錨點及 code fence 配對通過；Git probe Python 語法、所有變更檔案行尾空白與 `git diff --check` 通過。
 - 接續 MM-02；MM-03–MM-08 仍依 tasks 的順序。現有主控／遷移／交付契約已收斂，沒有需使用者補答的 MM-01 blocker。
@@ -132,12 +141,12 @@
 
 主要檔案：
 
-- [Runtime 與 CLI](../../skills/manager/scripts/manager)
-- [Adapters](../../skills/manager/scripts/lib/adapter.py)
-- [行為測試](../../skills/manager/scripts/test_manager.py)
-- [Worker protocol](../../skills/manager/references/worker-protocol.md)
-- [Escalation policy](../../skills/manager/references/escalation-policy.md)
-- [任務 brief 模板](../../skills/manager/templates/task.md)
+- [Runtime 與 CLI](../scripts/manager)
+- [Adapters](../scripts/lib/adapter.py)
+- [行為測試](../tests/test_manager.py)
+- [Worker protocol](../references/worker-protocol.md)
+- [Escalation policy](../references/escalation-policy.md)
+- [任務 brief 模板](../templates/task.md)
 
 ## 已完成的驗證
 
@@ -154,8 +163,8 @@
 從 repository 根目錄重跑：
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 測試只管理自己的暫存專案／tmux server。真實 tmux 測試需要主機允許建立 socket 與終端；上次在沙箱內失敗，取得執行權限後通過。不要把這個環境限制誤判為 runtime 功能失敗，也不要繞過主機權限。

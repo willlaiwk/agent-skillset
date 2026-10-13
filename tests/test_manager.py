@@ -21,7 +21,7 @@ import time
 import unittest
 from unittest import mock
 
-CLI = Path(__file__).resolve().with_name("manager")
+CLI = Path(__file__).resolve().parents[1] / "scripts/manager"
 REAL_TMUX = shutil.which("tmux")
 USE_REAL = os.environ.get("MANAGER_TEST_REAL_TMUX") == "1"
 

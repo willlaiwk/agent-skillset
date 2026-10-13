@@ -2,7 +2,7 @@
 
 - 日期：2026-10-10；起始 commit：`385e331`。本輪工作樹的提交狀態以 Git status/log 為準。
 - 規格：[SPEC-001 §6](../specs/001-multi-manager-isolation.md#6-同-id-的主控與鎖)、AC-06；[MM-03](../tasks.md#mm-03--主控所有權)、[ADR-0002](../adr/0002-manager-identity.md)。
-- 實作：[CLI](../../../skills/manager/scripts/manager)、[行為測試](../../../skills/manager/scripts/test_manager.py)、[runtime reference](../../../skills/manager/references/runtime.md)。
+- 實作：[CLI](../../scripts/manager)、[行為測試](../../tests/test_manager.py)、[runtime reference](../../references/runtime.md)。
 - 結果：MM-03 deterministic 範圍完成；SPEC-001 維持 Implementing，下一步 MM-04。真實 Agent／MM-08／MVP-02 仍待後續完成。
 
 ## 1. 行為與證據
@@ -26,8 +26,8 @@ Owner transition journal 不存 raw token，credential 先完成寫入與 fsync�
 平台：macOS／POSIX，Python 3.9.6。所有 Git repos、credential、markers、provider fixtures 與 tmux sockets 都在測試自己的 TemporaryDirectory；只使用假的互動式 Worker，不呼叫模型/API，不改使用者真實 runtime 資料或既有 tmux server。
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 - 最終預設：50 項，49 通過／1 real-only 跳過，63.668 秒。

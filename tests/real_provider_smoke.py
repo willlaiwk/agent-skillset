@@ -18,8 +18,8 @@ import subprocess
 import sys
 import tempfile
 
-REPOSITORY = Path(__file__).resolve().parents[3]
-CLI = REPOSITORY / "skills/manager/scripts/manager"
+REPOSITORY = Path(__file__).resolve().parents[1]
+CLI = REPOSITORY / "scripts/manager"
 TASK_FILES = ("smoke.py", "test_smoke.py")
 
 

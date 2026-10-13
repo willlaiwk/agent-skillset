@@ -275,11 +275,11 @@ Owner `reconcile` inventories only its namespace, flags stale/missing/corrupt wo
 
 ## Validation
 
-From the skill directory:
+From the repository root (development tests are under `tests/`):
 
 ```sh
-python3 scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 scripts/test_manager.py
+python3 -B tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 -B tests/test_manager.py
 ```
 
 Tests use real temporary Git repos with fake providers. Default mode uses fake tmux; real mode uses an isolated temporary socket/server and fake interactive workers, preserving the host's existing tmux server and invoking no models/APIs. Host permission may be needed to create real tmux sockets. These regressions are separate from the dated real-Codex smoke result above; they do not validate authenticated providers by themselves. Real-provider smoke testing uses account usage and preserves native trust/permission checks.

@@ -4,6 +4,8 @@
 
 這個目錄管理 manager skill 本身的設計與開發。使用 skill 管理產品專案時產生的 `.manager/` 是執行資料，兩者不共用任務狀態。
 
+Repository 已調整為單一 `manager-skill` 專案：skill 入口與 runtime resources 位於根目錄，開發工具位於 `tests/`；結構與安裝邊界見 [專案 README](../README.md#repository-layout) 與 [ADR-0005](adr/0005-single-skill-repository.md)。歷史 review 的連結及可執行命令已更新到目前位置；`reviews/mm08-evidence/` 的原始內容與 hashes 保持不變，其中舊絕對路徑是驗收當時的記錄。
+
 ## 文件分工
 
 | 文件 | 責任 | 更新時機 |
@@ -13,7 +15,7 @@
 | [adr/](adr/0001-documentation-workflow.md) | 重要決策的背景、選項、理由與代價 | 做出或改變架構決策時 |
 | [tasks.md](tasks.md) | 開發任務、依賴、狀態、完成條件與證據連結 | 任務拆解、開始、阻塞或驗收時 |
 | [progress.md](progress.md) | 實作現況、驗證缺口與下一個 Session 的接續資訊 | 工作交接或實作狀態改變時 |
-| [runtime reference](../../skills/manager/references/runtime.md) | 已發布 CLI 的實際使用方式與限制 | runtime 行為完成並驗證後 |
+| [runtime reference](../references/runtime.md) | 已發布 CLI 的實際使用方式與限制 | runtime 行為完成並驗證後 |
 
 功能細節寫在一份 spec；`design.md` 保留架構摘要及連結。ADR 解釋「為什麼」，task 管理「接下來做什麼」，progress 記錄「現在做到哪裡」，避免四份文件複製同一套規則。
 
@@ -31,6 +33,7 @@
 | ADR-0002 | [以 manager ID 隔離執行資料與識別](adr/0002-manager-identity.md) | Accepted；namespace 與主控交接已實作 |
 | ADR-0003 | [各 manager 獨立整合，共用交付入口](adr/0003-isolated-integration.md) | Accepted；獨立整合與共用本地交付已實作 |
 | ADR-0004 | [遷移由 manager runtime 提供](adr/0004-runtime-migration.md) | Accepted；backup/journal、歷史資格失效及 forward resume 已實作 |
+| ADR-0005 | [單一 skill repository 與檔案分工](adr/0005-single-skill-repository.md) | Accepted；根目錄發布 skill，tests／docs 管理開發資料 |
 
 ## 規格調整流程
 

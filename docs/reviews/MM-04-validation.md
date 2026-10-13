@@ -2,7 +2,7 @@
 
 - 日期：2026-10-10；起始 commit：`b302ee8`（MM-03 已提交）。MM-04 本輪工作樹是否提交以 Git status/log 為準。
 - 規格：[SPEC-001 §7.1](../specs/001-multi-manager-isolation.md#71-manager-整合工作區)、AC-07；[MM-04](../tasks.md#mm-04--獨立整合)、[ADR-0003](../adr/0003-isolated-integration.md)。
-- 實作：[CLI](../../../skills/manager/scripts/manager)、[namespace helper](../../../skills/manager/scripts/lib/namespace.py)、[行為測試](../../../skills/manager/scripts/test_manager.py)、[runtime reference](../../../skills/manager/references/runtime.md)。
+- 實作：[CLI](../../scripts/manager)、[namespace helper](../../scripts/lib/namespace.py)、[行為測試](../../tests/test_manager.py)、[runtime reference](../../references/runtime.md)。
 - 結果：MM-04／AC-07 deterministic 範圍完成；SPEC-001 維持 Implementing，下一步 MM-05。
 - 範圍：integration init/status/verify、來源 acceptance 與 combined snapshots、長 checks／busy／fencing／中斷診斷。沒有 deliver／target ref 更新／自動 import/merge/push；MM-05 尚未實作，真實 Agent 驗證仍待後續完成。
 
@@ -35,8 +35,8 @@ Control metadata/lock/evidence 都在 integration Git tree 外。Source report l
 所有 repositories、sources/candidates、local submodule fixture、owner credentials、markers、tmux servers 與假 provider binaries 都使用測試自己的 TemporaryDirectory。沒有模型/API、遠端 fetch/push、真實專案 migration 或既有 tmux server 操作。Submodule 使用 fixture-owned 本地 Git URL 與單次 `protocol.file.allow=always`，不改主機全域設定。
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+python3 tests/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 tests/test_manager.py
 ```
 
 - 最終預設：69 項，68 通過／1 real-only 跳過，143.870 秒。

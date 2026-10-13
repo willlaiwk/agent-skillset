@@ -20,26 +20,26 @@
 
 ## Fixture、命令與停止條件
 
-[mm08_provider_smoke.py](mm08_provider_smoke.py) 是需刻意執行的 real-provider fixture；`prepare` 只建暫存 repo，`spawn` 才會使用帳戶額度。Runtime 管理所有 worker lifecycle；`trust --confirm-trust` 僅在使用者明確同意且畫面/root/pane 相符後回應原生 trust。已確認 trust 不會重播 prompt input。`finish` 只在 accepted/combined eligible、所有 fixture Workers 不活躍且隔離核對通過後停止專用 tmux server，不刪 Git trees/state/evidence。
+[real_provider_smoke.py](../../tests/real_provider_smoke.py) 是需刻意執行的 real-provider fixture；`prepare` 只建暫存 repo，`spawn` 才會使用帳戶額度。Runtime 管理所有 worker lifecycle；`trust --confirm-trust` 僅在使用者明確同意且畫面/root/pane 相符後回應原生 trust。已確認 trust 不會重播 prompt input。`finish` 只在 accepted/combined eligible、所有 fixture Workers 不活躍且隔離核對通過後停止專用 tmux server，不刪 Git trees/state/evidence。
 
 Fixture 在 `/private/tmp/mm08-real-provider-elquvjt2/repo with spaces`，含 alpha/beta 同名 T001、beta integration tree、dirty/staged/untracked 主 checkout；private owner credential 只保存在上層 `private/`，不給 Worker、不進 repository。Alpha 是這次唯一真實 Worker，beta 未啟動 provider。
 
-首次遇到 Codex folder-trust，按 [manager protocol](../../../skills/manager/references/manager-protocol.md) 的「Do not auto-confirm a prompt」保留現場；使用者明確回覆「同意信任暫存 fixture」後，重新 inspect 並只信任該暫存 repository。決定由 Codex 原生機制保存；沒有變更全域 approval/sandbox 設定。Sandbox 的 tmux socket 存取限制依主機許可處理，未繞過原生 prompt。
+首次遇到 Codex folder-trust，按 [manager protocol](../../references/manager-protocol.md) 的「Do not auto-confirm a prompt」保留現場；使用者明確回覆「同意信任暫存 fixture」後，重新 inspect 並只信任該暫存 repository。決定由 Codex 原生機制保存；沒有變更全域 approval/sandbox 設定。Sandbox 的 tmux socket 存取限制依主機許可處理，未繞過原生 prompt。
 
 ```sh
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py prepare
+python3 tests/real_provider_smoke.py prepare
 # Use the fresh --run path returned by prepare; this completed run is historical.
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py spawn --run /private/tmp/mm08-real-provider-elquvjt2
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py inspect --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py spawn --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py inspect --run /private/tmp/mm08-real-provider-elquvjt2
 # Only after explicit human confirmation of this fixture's native trust prompt:
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py trust --confirm-trust --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py trust --confirm-trust --run /private/tmp/mm08-real-provider-elquvjt2
 # Wait for structured done and idle TUI, then send correction; wait for ack/new done.
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py correct --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py correct --run /private/tmp/mm08-real-provider-elquvjt2
 # Independently review real files and write review.md before verify/accept.
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py verify --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py verify --run /private/tmp/mm08-real-provider-elquvjt2
 # Write integration-review.md before reviewed transfer/commit/combined verification.
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py integrate --run /private/tmp/mm08-real-provider-elquvjt2
-python3 docs/manager-skill-design/reviews/mm08_provider_smoke.py finish --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py integrate --run /private/tmp/mm08-real-provider-elquvjt2
+python3 tests/real_provider_smoke.py finish --run /private/tmp/mm08-real-provider-elquvjt2
 ```
 
 Independent task checks 使用 `python3 -B -m unittest -v` 及 `python3 -B -c ...` exact-output/error assertions；combined checks 使用同一 4 項 unittest。`-B` 避免檢查額外建立 bytecode 改動 snapshot，沒有略過測試或放寬 acceptance。原 Manager review 曾把 bytecode 作為一般 scope 註記，實際 source 無 cache、git status 只有兩檔修改；另存 clarification，保留 immutable review/verification hashes。
@@ -71,4 +71,4 @@ MM-08 與 MVP-02 為 Done，SPEC-001 為 Implemented。只驗證此主機版本�
 
 Worker 行為觀察：Claude transcript 只有 Bash 呼叫（包括寫檔），沒有 Agent/Task subagent；pane 的 `← 1 agent` 是 UI 指示，不是 worker 開的 subagent。輸入框的 `check your inbox for manager corrections` 是 Claude 的 prompt suggestion（dim ghost text），不是有人輸入的內容，所以 `send` 的 paste 不會被串接。第一輪 result.md 誠實記錄 inbox 為空；修正後另記非字串輸入會丟 AttributeError，這不在修正範圍內，review 接受。
 
-Fixture 變更：[mm08_provider_smoke.py](mm08_provider_smoke.py) 新增 `prepare --agent {codex,claude}`（預設 codex，寫入 run.json），同時寫入內容相同的 `AGENTS.md`／`CLAUDE.md`；`trust` 只對 Codex 自動化。Runtime 沒有修改。
+Fixture 變更：[real_provider_smoke.py](../../tests/real_provider_smoke.py) 新增 `prepare --agent {codex,claude}`（預設 codex，寫入 run.json），同時寫入內容相同的 `AGENTS.md`／`CLAUDE.md`；`trust` 只對 Codex 自動化。Runtime 沒有修改。

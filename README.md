@@ -1,43 +1,41 @@
-# Agent Skillset
+# Manager Skill
 
-Reusable skills for coding agents. This repository packages focused workflows, supporting scripts, and task-specific references to help agents carry engineering work from a request through implementation and verification.
+A local engineering manager for coding agents. The Manager plans repository work, delegates focused tasks to Codex or Claude Code workers, supervises their questions and corrections, and independently verifies and integrates their results.
 
-Each skill lives in `skills/<name>/` and provides a `SKILL.md` entry point describing when to use it and how it works. Runtime requirements depend on the selected skill.
+The user works with one primary agent. Worker completion remains a claim until the Manager reviews and verifies it.
 
-## Available Skills
+## Repository Layout
 
-| Skill | Purpose | Requirements |
-| --- | --- | --- |
-| [Manager](skills/manager/SKILL.md) | Plan repository work, delegate tasks to local Codex or Claude Code workers, supervise questions and corrections, and independently verify their results. | Python 3.9+, Git, tmux, and an installed, authenticated worker CLI on macOS or Linux. |
+This repository develops and distributes one skill, named `manager`. The skill entry point and its runtime resources live at the repository root:
 
-## Manager
+```text
+manager-skill/
+├── SKILL.md                 Agent instructions and invocation scope
+├── agents/                  Agent UI metadata
+├── scripts/
+│   ├── manager              Public runtime CLI
+│   └── lib/                 Runtime helpers and provider adapters
+├── references/              Runtime usage and management protocols
+├── templates/               Worker task brief
+├── tests/                   Behavioral tests, document checks and opt-in probes
+└── docs/                    Design, specifications, decisions and validation evidence
+```
 
-The Manager skill keeps one primary agent responsible for the requested outcome while workers handle focused tasks. It is intended for engineering work that benefits from coordination across multiple tasks.
+Read [SKILL.md](SKILL.md) for the Manager workflow and [the runtime reference](references/runtime.md) for commands, configuration and operational limits. Developers should start with [docs/README.md](docs/README.md), [current progress](docs/progress.md) and [the task list](docs/tasks.md).
 
-Its local runtime provides:
+## Requirements and Installation
 
-- Persistent interactive Codex and Claude Code worker sessions in tmux.
-- A separate Git worktree for each worker.
-- Explicit manager IDs with isolated task state, worker routing, and read-only inspection.
-- Owner claim/release/takeover and generation fencing, with long checks outside the registry lock.
-- Task dependencies and configurable worker concurrency limits.
-- Structured status reports, durable messages, and message acknowledgments.
-- Independent verification records and an acceptance gate that checks whether reviewed results have changed.
-- Per-manager integration worktrees and combined evidence bound to accepted sources, candidate and target snapshots.
-- A shared local delivery gate with expected-OID transactions and recoverable receipts, limited to existing branches that no registered worktree has checked out.
-- Persisted task state, diagnostics, and bounded retries that retain existing work.
+The runtime requires Python 3.9+, Git, tmux, and an installed, authenticated `codex` or `claude` CLI on a POSIX host. Real-provider validation is recorded for macOS; other platforms need their own evidence. The default runtime uses the Python standard library; YAML configuration additionally requires PyYAML.
 
-Worker completion requires independent manager verification. The manager also owns integration and verification of the combined result. The current runtime uses polling; background scheduling and event-triggered manager wake-up are not implemented.
+Make the complete repository checkout available as the `manager` skill directory through your coding agent's supported skill-loading mechanism. Keep `SKILL.md`, `agents/`, `scripts/`, `references/` and `templates/` together. The skill entry point is at the checkout root; there is no nested `skills/manager/` package. `docs/` and `tests/` support development and are not required to execute the installed runtime.
 
-See the [runtime reference](skills/manager/references/runtime.md) for CLI commands, configuration, and operational limits.
+Check the CLI from the repository root:
 
-## Getting Started
+```sh
+python3 scripts/manager --help
+```
 
-1. Choose a skill from the catalog and read its `SKILL.md`.
-2. Make the complete skill directory available through your coding agent's supported skill-loading mechanism, including its scripts and references.
-3. Check the skill's runtime requirements, then ask your agent to use it for your task.
-
-For example:
+Then ask your coding agent:
 
 ```text
 Use the manager skill to add Google OAuth to this project's login page.
@@ -45,26 +43,44 @@ Include loading and error states, add relevant tests, and independently
 verify the integrated result before reporting completion.
 ```
 
-Manager runtime data is stored in `.manager/{manager-id}/` at the managed project's Git root. Initialization uses shared Git `info/exclude` and preserves the user's `.gitignore`. Save the returned ID, explicitly claim ownership, and use that selector and private owner credential for management writes. Workers start from committed Git refs; relevant uncommitted changes must be accounted for in the task plan.
+The repository name is `manager-skill`; the skill name and invocation remain `manager`.
 
-The v2 runtime provides manager namespaces, owner handoff, long-verification fencing, isolated integration/combined verification, the local delivery gate, and explicit v1 migration with backup and forward resume. Deterministic composition and a real Codex CLI 0.162.1 lifecycle through message acknowledgment, correction, independent acceptance and isolated integration are validated on macOS. Claude Code 2.1.296 later passed the same real lifecycle under the host's native auto permission mode. Delivery uses existing user/repository authorization and provides no push or PR creation. Migration requires a zero-write preview, matching source hash and quiesced legacy writers; historical acceptance requires fresh verification. See the [migration workflow](skills/manager/references/runtime.md#explicit-v1-migration).
+## Current Capabilities
 
-## Development
+The local runtime provides:
 
-Run the Manager behavioral tests from the repository root:
+- Persistent interactive Codex and Claude Code worker sessions in tmux, with a separate Git worktree for each worker.
+- Explicit manager IDs, isolated task state and routing, and read-only inspection.
+- Owner claim/release/takeover and generation fencing, with long checks outside the registry lock.
+- Task dependencies, per-manager worker limits, structured reports, durable messages and acknowledgments.
+- Independent verification records and acceptance gates bound to reviewed results.
+- Per-manager integration worktrees and combined evidence bound to accepted sources, candidate and target snapshots.
+- A shared local delivery gate with expected-OID transactions and recoverable receipts, limited to existing branches that no registered worktree has checked out.
+- Persisted diagnostics, bounded retries, and explicit v1 migration with backups and forward resume.
+
+Runtime data belongs to the managed project's Git root under `.manager/{manager-id}/`, separately from this repository's development documents. Initialization uses shared Git `info/exclude` and preserves the user's `.gitignore`. Save the returned ID, explicitly claim ownership, and keep the private owner credential outside worker artifacts.
+
+Workers start from committed Git refs. Acceptance does not automatically transfer prerequisite code into later workers; prepare a committed integration base before registering dependent tasks. Delivery follows existing user/repository authorization and provides no push or PR creation. Migration requires a zero-write preview, matching source hash and quiesced legacy writers; historical acceptance requires fresh verification. See the [migration workflow](references/runtime.md#explicit-v1-migration).
+
+The runtime currently uses polling. Automatic scheduling, event-triggered wake-up, automatic verification and expanded routing/retry policies remain Phase 2 work.
+
+Deterministic composition and real Codex CLI 0.162.1 and Claude Code 2.1.296 lifecycles through acknowledgment, correction, independent acceptance and isolated integration are validated on macOS. Claude was validated under the host's native auto permission mode. See [the provider evidence](docs/reviews/MM-08-validation.md) for exact versions and limits.
+
+## Development and Validation
+
+Run behavioral tests and maintained documentation checks from the repository root:
 
 ```sh
-python3 skills/manager/scripts/test_manager.py
+python3 -B tests/test_manager.py
+python3 -B tests/validate_docs.py
 ```
 
-To exercise a real tmux server with test workers:
+To exercise a real, isolated tmux server with fake workers:
 
 ```sh
-MANAGER_TEST_REAL_TMUX=1 python3 skills/manager/scripts/test_manager.py
+MANAGER_TEST_REAL_TMUX=1 python3 -B tests/test_manager.py
 ```
 
-These tests use temporary Git repositories and fake workers, with no model API calls.
+Behavioral tests use temporary Git repositories and fake providers, with no model API calls. [tests/real_provider_smoke.py](tests/real_provider_smoke.py) is an opt-in real-provider fixture; launching its worker consumes account usage and preserves native trust/permission checks. Follow [the smoke procedure](docs/reviews/MM-08-validation.md) when a real-provider run is needed. [tests/probe_git_primitives.py](tests/probe_git_primitives.py) provides the historical Git mechanism probe separately from runtime tests.
 
-## Contributing
-
-Keep new skills under `skills/<name>/`, with a clear description of their purpose and invocation scope in `SKILL.md`. Include supporting resources only when they serve the workflow, validate executable helpers, and update the skill catalog when adding a skill.
+Keep runtime code in `scripts/`, behavioral verification in `tests/`, agent-facing guidance in `references/`, and development specifications and evidence in `docs/`. Follow [the documentation workflow](docs/README.md) for new functionality and update runtime guidance when supported behavior changes.

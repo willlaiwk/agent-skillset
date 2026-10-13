@@ -15,6 +15,11 @@ Network Trash Folder/
 Temporary Items/
 .apdisk
 
+# Python development artifacts
+__pycache__/
+*.py[cod]
+.venv/
+
 # Windows
 Thumbs.db
 Thumbs.db:encryptable

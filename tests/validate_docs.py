@@ -4,16 +4,18 @@
 Does not execute example commands or validate historical design.md CLI sketches.
 Run from any directory with Python 3.9+; no third-party dependencies.
 """
+import contextlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import io
 from pathlib import Path
 import re
 import shlex
 import sys
 from urllib.parse import unquote, urlsplit
 
-ROOT = Path(__file__).resolve().parents[3]
-CLI = ROOT / "skills/manager/scripts/manager"
+ROOT = Path(__file__).resolve().parents[1]
+CLI = ROOT / "scripts/manager"
 
 
 def markdown_parts(path):
@@ -52,7 +54,8 @@ def anchors(prose):
 
 
 def main():
-    paths = sorted([ROOT / "README.md", *ROOT.glob("docs/**/*.md"), *ROOT.glob("skills/**/*.md")])
+    paths = sorted([ROOT / "README.md", ROOT / "SKILL.md", *ROOT.glob("docs/**/*.md"),
+                    *ROOT.glob("references/**/*.md"), *ROOT.glob("templates/**/*.md")])
     parsed = {path: markdown_parts(path) for path in paths}
     errors, links, examples = [], 0, 0
     for path, (prose, _) in parsed.items():
@@ -75,7 +78,8 @@ def main():
     spec = importlib.util.spec_from_loader("manager_docs_check", SourceFileLoader("manager_docs_check", str(CLI)))
     runtime = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runtime)
-    published = [*ROOT.glob("skills/manager/**/*.md"), ROOT / "docs/manager-skill-design/specs/001-multi-manager-isolation.md"]
+    published = [ROOT / "README.md", ROOT / "SKILL.md", *ROOT.glob("references/**/*.md"),
+                 *ROOT.glob("templates/**/*.md"), ROOT / "docs/specs/001-multi-manager-isolation.md"]
     for path in published:
         for language, block in parsed[path][1]:
             if language not in ("sh", "bash", "shell"):
@@ -86,16 +90,19 @@ def main():
                     continue
                 if words[0] == "manager":
                     arguments = words[1:]
-                elif len(words) > 1 and words[0] == "python3" and words[1].endswith("/scripts/manager"):
+                elif (len(words) > 1 and words[0] == "python3" and
+                      (words[1] == "scripts/manager" or words[1].endswith("/scripts/manager"))):
                     arguments = words[2:]
                 else:
                     continue
                 # Uppercase ID in SKILL.md is a replacement placeholder, not a legal selector.
                 arguments = ["example-id" if word == "ID" else word for word in arguments]
                 try:
-                    runtime.parser().parse_args(arguments)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        runtime.parser().parse_args(arguments)
                 except SystemExit as exc:
-                    errors.append(f"{path.relative_to(ROOT)}: CLI example failed ({exc.code}): {line}")
+                    if exc.code != 0:
+                        errors.append(f"{path.relative_to(ROOT)}: CLI example failed ({exc.code}): {line}")
                 examples += 1
     if errors:
         raise ValueError("\n".join(errors))
